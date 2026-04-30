@@ -7,6 +7,12 @@ Required secrets (Streamlit Cloud > App > Settings > Secrets):
   DATABRICKS_HOST       e.g. "joby-aviation-main.cloud.databricks.com"
   DATABRICKS_HTTP_PATH  e.g. "/sql/1.0/warehouses/<warehouse-id>"
   DATABRICKS_TOKEN      Service principal token (read-only on warehouse)
+
+Locked filters per spec (4/22/26):
+  - Pipeline: project=ME, components=Composite Part, type!=Epic,
+              status in (Scheduled, Kit, Ready to Laminate, Laminate)
+  - Quality:  4 comp shop areas, 6mo, issue_status!=deleted, no battery/busbar/sleeve 5-ply
+  - Severity: RED if scraps>=2 OR wrinkles>=3; ORANGE if scraps>=1 OR total>=3 OR wrinkles>=2
 """
 
 import io
@@ -30,38 +36,40 @@ st.set_page_config(
 
 LOOKBACK_DAYS = 180  # 6 months of quality history
 
-# Jira status -> pipeline stage (display name)
+# Jira status -> pipeline stage (display name).
+# 'Open' (Ready to Schedule) and 'Ready to Cure' are intentionally excluded.
 STATUS_TO_STAGE = {
-    "Open":              "Ready to Schedule",
     "Scheduled":         "Scheduled",
     "Kit":               "Material Cutting",
     "Ready to Laminate": "Ready to Layup",
     "Laminate":          "Layup",
-    "Ready to Cure":     "Ready to Cure",
 }
 STAGE_RANK = {s: i for i, s in enumerate([
-    "Ready to Schedule", "Scheduled", "Material Cutting",
-    "Ready to Layup", "Layup", "Ready to Cure",
+    "Scheduled", "Material Cutting", "Ready to Layup", "Layup",
 ])}
 
-# Hand Layup originating areas in Ion
-HAND_LAYUP_AREAS = ("527 Lamination", "527 Kitting")
+# Composite shop quality areas — matches locked brief
+COMP_SHOP_AREAS = (
+    "527 Lamination",
+    "527 Kitting",
+    "527 Hand Trim",
+    "Manufacturing Engineering - Composites Fabrication",
+)
+COMP_SHOP_AREAS_SQL = ", ".join(f"'{a}'" for a in COMP_SHOP_AREAS)
 
-# Patterns to exclude from pipeline (TESTdb, training, dev articles)
+# Post-SQL pattern exclusions (TESTdb, training, dev articles).
+# These are in addition to the SQL-level BATTERY/BUSBAR/SLEEVE 5-PLY excludes.
 EXCLUDED_PATTERNS = [
     "TESTdb", "TEST PANEL", "PANEL: LAYUP TRAINING",
     "ADHESIVE PULLOFF PANEL", "NDI REFERENCE STANDARD",
-    "JED00711 C", "JED00713", "JED000717", "CENTER SLEEVE, 5-PLY",
-    "BUSBAR, 5-PLY", "DEV STATOR SLEEVE", "SPINNER FOR DB2",
+    "JED00711 C", "JED00713", "JED000717",
+    "DEV STATOR SLEEVE", "SPINNER FOR DB2",
     "JED00722", "STIFFENER RESIN RIDGE REDUCTION",
 ]
 EXCLUDED_REGEX = "|".join(re.escape(p) for p in EXCLUDED_PATTERNS)
 
-# Severity rule: 2+ scraps = RED, 1 scrap or 3+ issues = ORANGE,
-# 1-2 issues = YELLOW, none = CLEAN
-SEV_RANK = {"HOLD": 0, "RED": 1, "ORANGE": 2, "YELLOW": 3, "CLEAN": 4}
+SEV_RANK = {"RED": 0, "ORANGE": 1, "YELLOW": 2, "CLEAN": 3}
 SEV_COLOR = {
-    "HOLD":   "#6c3483",
     "RED":    "#c0392b",
     "ORANGE": "#d4730b",
     "YELLOW": "#d4920b",
@@ -94,18 +102,22 @@ def _run_query(sql: str) -> pd.DataFrame:
 PIPELINE_SQL = """
 SELECT
     issue_id,
+    order_number,
     part_number,
     summary,
-    location,
     components,
     status,
     priority,
     due_date,
-    created_at,
-    sn_relation
+    created_at
 FROM manufacturing.jira.issues
 WHERE project_name = 'ME'
-  AND status IN ('Open','Scheduled','Kit','Ready to Laminate','Laminate','Ready to Cure')
+  AND issue_type != 'Epic'
+  AND components = 'Composite Part'
+  AND status IN ('Scheduled', 'Kit', 'Ready to Laminate', 'Laminate')
+  AND upper(coalesce(summary, '')) NOT LIKE '%BATTERY%'
+  AND upper(coalesce(summary, '')) NOT LIKE '%BUSBAR%'
+  AND upper(coalesce(summary, '')) NOT LIKE '%SLEEVE, 5-PLY%'
 """
 
 QUALITY_SQL = f"""
@@ -120,10 +132,20 @@ SELECT
     defect_code,
     issue_status,
     serialNumber,
-    link_to_issue
-FROM manufacturing.onion_silver.quality_issues
-WHERE created >= DATE_SUB(CURRENT_DATE(), {LOOKBACK_DAYS})
-  AND originating_area IN ('527 Lamination', '527 Kitting')
+    link_to_issue,
+    CASE
+      WHEN lower(coalesce(defect_code, '')) LIKE '%wnk%'
+        OR lower(coalesce(issue_title, '')) LIKE '%wrinkle%'
+        OR lower(coalesce(issue_title, '')) LIKE '%winkel%'
+      THEN 1 ELSE 0
+    END AS is_wrinkle
+FROM manufacturing.onion_silver.quality_issues_view
+WHERE CAST(created AS DATE) >= CURRENT_DATE() - INTERVAL {LOOKBACK_DAYS} DAYS
+  AND issue_status != 'deleted'
+  AND originating_area IN ({COMP_SHOP_AREAS_SQL})
+  AND upper(coalesce(part_description, '')) NOT LIKE '%BATTERY%'
+  AND upper(coalesce(part_description, '')) NOT LIKE '%BUSBAR%'
+  AND upper(coalesce(part_description, '')) NOT LIKE '%SLEEVE, 5-PLY%'
 """
 
 
@@ -132,6 +154,7 @@ def load_pipeline() -> pd.DataFrame:
     df = _run_query(PIPELINE_SQL)
     if df.empty:
         return df
+    # Belt-and-suspenders dev/test article exclusion
     mask = ~df["summary"].fillna("").str.contains(EXCLUDED_REGEX, case=False, regex=True)
     df = df.loc[mask].copy()
     df["stage"] = df["status"].map(STATUS_TO_STAGE)
@@ -157,12 +180,16 @@ def load_quality() -> pd.DataFrame:
 # ============================================================
 
 def normalize_pn(pn) -> str:
-    """Strip serial/lot suffixes so cross-referencing finds the family."""
+    """Strip serial/lot suffixes so cross-referencing finds the family.
+    Matches the SQL regex in the locked brief: (-X\\d+.*|-S\\d+$|-L\\d+$|-TPDT$)
+    """
     if not pn or pn == "None":
         return ""
     s = str(pn).strip()
-    for pat in [r"-X\d+-L\d+", r"-X\d+$", r"-S\d+$", r"-L\d+$", r"-TPDT$"]:
-        s = re.sub(pat, "", s)
+    s = re.sub(r"-X\d+.*$", "", s)
+    s = re.sub(r"-S\d+$",   "", s)
+    s = re.sub(r"-L\d+$",   "", s)
+    s = re.sub(r"-TPDT$",   "", s)
     return s
 
 
@@ -182,17 +209,18 @@ def clean_defect_code(dc) -> str:
     return " / ".join(out)
 
 
-def classify_severity(scraps: int, total: int) -> str:
-    if scraps >= 2:
+def classify_severity(scraps: int, wrinkles: int, total: int) -> str:
+    """Locked classification (4/22/26). Top-down, first match wins."""
+    if scraps >= 2 or wrinkles >= 3:
         return "RED"
-    if scraps >= 1 or total >= 3:
+    if scraps >= 1 or total >= 3 or wrinkles >= 2:
         return "ORANGE"
     if total >= 1:
         return "YELLOW"
     return "CLEAN"
 
 
-def score_pipeline(pipeline: pd.DataFrame, quality: pd.DataFrame, holds: set) -> pd.DataFrame:
+def score_pipeline(pipeline: pd.DataFrame, quality: pd.DataFrame) -> pd.DataFrame:
     """Attach quality history + severity to each pipeline part."""
     if pipeline.empty:
         return pipeline
@@ -205,16 +233,12 @@ def score_pipeline(pipeline: pd.DataFrame, quality: pd.DataFrame, holds: set) ->
     out = []
     for p in pipeline.to_dict("records"):
         h = history.get(p["pn_norm"], [])
-        scraps = sum(1 for i in h if i.get("disposition") == "Scrap")
-        rework = sum(1 for i in h if i.get("disposition") == "Rework")
-        pending = sum(1 for i in h if not i.get("disposition"))
-        wrinkles = sum(1 for i in h if "wrinkle" in str(i.get("clean_defect", "")).lower())
+        scraps   = sum(1 for i in h if i.get("disposition") == "Scrap")
+        rework   = sum(1 for i in h if i.get("disposition") == "Rework")
+        pending  = sum(1 for i in h if not i.get("disposition"))
+        wrinkles = sum(1 for i in h if int(i.get("is_wrinkle") or 0) == 1)
 
-        on_hold = (p.get("issue_id") or "") in holds
-        if on_hold:
-            sev = "HOLD"
-        else:
-            sev = classify_severity(scraps, len(h))
+        sev = classify_severity(scraps, wrinkles, len(h))
 
         out.append({
             **p,
@@ -252,7 +276,6 @@ st.markdown("""
 .val-orange { color: #d4730b; }
 .val-yellow { color: #d4920b; }
 .val-green  { color: #1D9E75; }
-.val-purple { color: #6c3483; }
 .alert-card {
   border-left: 4px solid; padding: 10px 14px; margin-bottom: 8px;
   background: #f9f9f9; border-radius: 4px;
@@ -260,7 +283,6 @@ st.markdown("""
 .alert-card.red    { border-color: #c0392b; background: #fae4e1; }
 .alert-card.orange { border-color: #d4730b; background: #fef0e0; }
 .alert-card.yellow { border-color: #d4920b; background: #fef5e7; }
-.alert-card.hold   { border-color: #6c3483; background: #f0e6f5; }
 .alert-card .pn       { font-weight: 700; font-size: 13.5px; color: #1a1a1a; }
 .alert-card .meta     { font-size: 11px; color: #555; margin-top: 3px; }
 .alert-card .badge {
@@ -270,7 +292,6 @@ st.markdown("""
 .alert-card .badge.red    { background: #c0392b; }
 .alert-card .badge.orange { background: #d4730b; }
 .alert-card .badge.yellow { background: #d4920b; color: #1a1a1a; }
-.alert-card .badge.hold   { background: #6c3483; }
 .history-line { font-size: 11px; color: #444; margin-top: 4px; padding-left: 8px; border-left: 2px solid #ccc; }
 .history-scrap { color: #c0392b; font-weight: 600; }
 </style>
@@ -295,29 +316,16 @@ with st.sidebar:
     st.caption("Cached for 5 min. Hit refresh to re-pull from Databricks.")
 
     st.divider()
-    st.subheader("Hold list")
-    st.caption("Parts to flag as HOLD regardless of quality history.")
-    hold_text = st.text_area(
-        "ME-IDs (one per line)",
-        value=st.session_state.get("holds_text", ""),
-        height=100,
-        placeholder="ME-43116\nME-46598",
-        label_visibility="collapsed",
-    )
-    st.session_state["holds_text"] = hold_text
-    holds = {h.strip() for h in hold_text.splitlines() if h.strip()}
-
-    st.divider()
     st.caption("**Severity rules**")
-    st.caption("🔴 RED — 2+ scrap events")
-    st.caption("🟠 ORANGE — 1 scrap or 3+ issues")
-    st.caption("🟡 YELLOW — 1–2 issues, no scrap")
+    st.caption("🔴 RED — 2+ scraps OR 3+ wrinkles")
+    st.caption("🟠 ORANGE — 1 scrap, 3+ issues, OR 2+ wrinkles")
+    st.caption("🟡 YELLOW — 1+ issue, no scrap")
     st.caption("🟢 CLEAN — no quality history")
-    st.caption("🟣 HOLD — manual flag")
 
     st.divider()
     st.caption(f"Lookback: {LOOKBACK_DAYS} days")
-    st.caption("Source: manufacturing.jira.issues + onion_silver.quality_issues")
+    st.caption("Areas: 527 Lam, Kitting, Hand Trim, ME-Comp Fab")
+    st.caption("Source: jira.issues + onion_silver.quality_issues_view")
 
 # Load data
 try:
@@ -338,7 +346,7 @@ if pipeline_df.empty:
     st.warning("No parts found in pipeline. Check Jira filters.")
     st.stop()
 
-scored = score_pipeline(pipeline_df, quality_df, holds)
+scored = score_pipeline(pipeline_df, quality_df)
 
 # Top metrics
 sev_counts = scored["severity"].value_counts()
@@ -346,12 +354,10 @@ red    = int(sev_counts.get("RED", 0))
 orange = int(sev_counts.get("ORANGE", 0))
 yellow = int(sev_counts.get("YELLOW", 0))
 clean  = int(sev_counts.get("CLEAN", 0))
-hold_n = int(sev_counts.get("HOLD", 0))
 
 st.markdown(f"""
 <div class="metric-row">
   <div class="metric-box"><div class="label">Pipeline parts</div><div class="val">{len(scored)}</div></div>
-  <div class="metric-box"><div class="label">🟣 Hold</div><div class="val val-purple">{hold_n}</div></div>
   <div class="metric-box"><div class="label">🔴 Red</div><div class="val val-red">{red}</div></div>
   <div class="metric-box"><div class="label">🟠 Orange</div><div class="val val-orange">{orange}</div></div>
   <div class="metric-box"><div class="label">🟡 Yellow</div><div class="val val-yellow">{yellow}</div></div>
@@ -373,7 +379,6 @@ def render_alert(row, show_history=True, max_history=5):
     issue_id = row.get("issue_id") or ""
     stage = row.get("stage") or ""
 
-    # Defect codes (deduped) from history
     defect_set = []
     for h in row.get("history") or []:
         d = h.get("clean_defect")
@@ -422,8 +427,8 @@ def render_alert(row, show_history=True, max_history=5):
 def filter_and_sort(df, stages):
     sub = df[df["stage"].isin(stages)].copy()
     sub = sub.sort_values(
-        ["sev_rank", "scrap_count", "issue_count"],
-        ascending=[True, False, False],
+        ["sev_rank", "scrap_count", "wrinkle_count", "issue_count"],
+        ascending=[True, False, False, False],
     )
     return sub
 
@@ -442,8 +447,8 @@ tab_floor, tab_next, tab_up, tab_search, tab_export = st.tabs([
 
 with tab_floor:
     st.subheader("On the Floor")
-    st.caption("Parts in **Layup** + **Ready to Cure** — what to check during your walk")
-    on_floor = filter_and_sort(scored, ["Layup", "Ready to Cure"])
+    st.caption("Parts in **Layup** — what to check during your walk")
+    on_floor = filter_and_sort(scored, ["Layup"])
     flagged = on_floor[on_floor["severity"] != "CLEAN"]
     st.write(f"**{len(on_floor)}** parts on the floor — **{len(flagged)}** need attention")
     if flagged.empty:
@@ -468,10 +473,10 @@ with tab_next:
 
 with tab_up:
     st.subheader("Upstream")
-    st.caption("Material Cutting + Scheduled + Open — flag before they arrive")
-    upstream = filter_and_sort(scored, ["Material Cutting", "Scheduled", "Ready to Schedule"])
-    flagged = upstream[upstream["severity"].isin(["RED", "ORANGE", "HOLD"])]
-    st.write(f"**{len(upstream)}** parts upstream — showing **{len(flagged)}** RED/ORANGE/HOLD")
+    st.caption("Material Cutting + Scheduled — flag before they arrive")
+    upstream = filter_and_sort(scored, ["Material Cutting", "Scheduled"])
+    flagged = upstream[upstream["severity"].isin(["RED", "ORANGE"])]
+    st.write(f"**{len(upstream)}** parts upstream — showing **{len(flagged)}** RED/ORANGE")
     if flagged.empty:
         st.info("Nothing critical upstream right now.")
     else:
@@ -488,7 +493,6 @@ with tab_search:
     if q:
         ql = q.lower().strip()
 
-        # Search pipeline parts
         mask = (
             scored["summary"].fillna("").str.lower().str.contains(ql, regex=False) |
             scored["part_number"].fillna("").str.lower().str.contains(ql, regex=False) |
@@ -499,7 +503,6 @@ with tab_search:
         for _, row in hits.head(40).iterrows():
             render_alert(row)
 
-        # Also search loose quality history (parts NOT currently in pipeline)
         if not quality_df.empty:
             qmask = (
                 quality_df["part_description"].fillna("").str.lower().str.contains(ql, regex=False) |
@@ -533,7 +536,6 @@ with tab_export:
     st.subheader("Export")
     st.caption("Download the current snapshot as CSV or PDF")
 
-    # CSV download
     flat_cols = [
         "issue_id", "part_number", "summary", "stage", "severity",
         "issue_count", "scrap_count", "rework_count", "pending_count", "wrinkle_count",
@@ -547,7 +549,6 @@ with tab_export:
         use_container_width=True,
     )
 
-    # PDF download — same look as the V2 scheduled report
     if st.button("📄 Generate PDF report", use_container_width=True, type="primary"):
         with st.spinner("Building PDF…"):
             from pdf_export import build_pdf
