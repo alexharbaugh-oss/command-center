@@ -5,6 +5,9 @@ Locked palette + 4-stage layout per spec brief (4/22/26).
 Liberation Sans is registered when available (Streamlit Cloud needs
 'fonts-liberation' in packages.txt — falls back to default Helvetica
 silently if not installed).
+
+Pages are dynamically packed by actual card height so the layout fills
+each page rather than stopping at a fixed card count.
 """
 
 import io
@@ -99,8 +102,27 @@ def build_pdf(scored, now_pt: datetime) -> bytes:
     return buf.getvalue()
 
 
+def _card_height(rec):
+    """Match the height calc inside _draw_alert_card."""
+    n_hist = min(len(rec.get("history") or []), 4)
+    h = 50 + n_hist * 11
+    if n_hist == 0 and rec.get("issue_count", 0) == 0:
+        h = 40
+    return h
+
+
 def _layout_pages(scored):
-    """Return list of (kind, payload) tuples — one per page."""
+    """Return list of (kind, payload) tuples — one per page.
+
+    Uses dynamic packing: each page fills based on actual card heights
+    rather than a fixed cards-per-page cap. Usable height calc:
+        page = letter (792pt)
+        - top header strip            ≈ 78pt
+        - section title               ≈ 18pt
+        - footer reserve              ≈ 80pt
+        ----------------------------------
+        usable                        ≈ 616pt
+    """
     pages = [("summary", None)]
     sections = []
 
@@ -137,14 +159,28 @@ def _layout_pages(scored):
     if not upstream.empty:
         sections.append(("UPSTREAM — RED + ORANGE only", upstream.to_dict("records")))
 
-    PER_PAGE = 5
+    USABLE_HEIGHT = 616.0
+    GAP_BETWEEN   = 8.0
+
     for title, items in sections:
         first = True
-        for i in range(0, len(items), PER_PAGE):
-            chunk = items[i:i + PER_PAGE]
+        page_items = []
+        page_used  = 0.0
+        for rec in items:
+            ch = _card_height(rec)
+            need = ch + (GAP_BETWEEN if page_items else 0)
+            if page_used + need > USABLE_HEIGHT and page_items:
+                heading = title if first else f"{title} (cont.)"
+                pages.append(("alerts", {"title": heading, "items": page_items}))
+                first = False
+                page_items = [rec]
+                page_used  = ch
+            else:
+                page_items.append(rec)
+                page_used += need
+        if page_items:
             heading = title if first else f"{title} (cont.)"
-            pages.append(("alerts", {"title": heading, "items": chunk}))
-            first = False
+            pages.append(("alerts", {"title": heading, "items": page_items}))
 
     if len(pages) == 1:
         pages.append(("alerts", {"title": "ALL CLEAR — no flagged parts", "items": []}))
@@ -353,11 +389,12 @@ def _draw_alert_card(c, row, y):
 
     pn = row.get("part_number") or ""
     issue_id = row.get("issue_id") or ""
+    mfid = row.get("order_number") or "—"
     stage = row.get("stage") or ""
     c.setFillColor(LIGHT)
     c.setFont("Helvetica", 8)
     c.drawString(MARGIN + 12, y - 30,
-                 f"{issue_id}  ·  {pn}  ·  Stage: {stage}")
+                 f"{issue_id}  ·  MFID-{mfid}  ·  {pn}  ·  Stage: {stage}")
 
     bits = []
     if row["scrap_count"]:
