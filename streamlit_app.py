@@ -681,13 +681,13 @@ def render_delta_line(row, prefix="", suffix=""):
 # TABS
 # ============================================================
 
-tab_delta, tab_floor, tab_next, tab_up, tab_search, tab_export = st.tabs([
-    "📊 What Changed",
+tab_floor, tab_next, tab_up, tab_search, tab_export, tab_delta = st.tabs([
     "🏭 On the Floor",
     "📋 Ready to Layup",
     "⏰ Upstream",
     "🔍 Search",
     "📄 Export",
+    "📊 What Changed",
 ])
 
 with tab_delta:
