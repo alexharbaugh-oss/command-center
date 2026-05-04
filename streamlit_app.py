@@ -38,7 +38,7 @@ st.set_page_config(
     page_title="Production Command Center",
     page_icon="🛠️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 LOOKBACK_DAYS = 180
@@ -47,7 +47,7 @@ WATCHLIST_TABLE = "manufacturing.default.kqw_watchlist"
 SNAPSHOT_MIN_GAP_MINUTES = 30
 MIN_DAYS_FOR_VERDICT = 14
 IMPROVEMENT_THRESHOLD = 0.25
-APP_VERSION = "v0.6"
+APP_VERSION = "v0.7"
 
 STATUS_TO_STAGE = {
     "Scheduled":         "Scheduled",
@@ -584,7 +584,7 @@ def fmt_delta(curr, prior, lower_is_better=True):
 
 
 # ============================================================
-# CSS — MINIMAL chrome hiding, sidebar untouched
+# CSS
 # ============================================================
 
 BASE_CSS = """
@@ -592,10 +592,14 @@ BASE_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&display=swap');
 
-/* === Hide ONLY the safe stuff. Do NOT touch stHeader. === */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 .stDeployButton, .stAppDeployButton { display: none !important; }
+
+/* No sidebar — hide it entirely along with the reopen control */
+[data-testid="stSidebar"] { display: none !important; }
+[data-testid="collapsedControl"] { display: none !important; }
+section[data-testid="stSidebarUserContent"] { display: none !important; }
 
 :root {
   --joby-off-black:    #0E1620;
@@ -661,7 +665,7 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
 [data-testid="stAppViewContainer"] { background: var(--bg-page) !important; }
 
 .block-container {
-  padding-top: 1.5rem;
+  padding-top: 1rem;
   padding-bottom: 4rem;
   max-width: 1280px;
 }
@@ -672,68 +676,90 @@ h1, h2, h3, h4 {
   font-weight: 700;
 }
 
-[data-testid="stSidebar"] {
+/* === Top utility bar (just dark mode toggle, right-aligned) === */
+.st-key-theme_toggle {
+  display: flex;
+  justify-content: flex-end;
+}
+.st-key-theme_toggle button {
   background: var(--bg-card) !important;
-  border-right: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-default) !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  padding: 5px 12px !important;
+  border-radius: 12px !important;
+  min-height: 0 !important;
+  height: auto !important;
+  transition: all 150ms ease !important;
+  box-shadow: var(--shadow-sm);
 }
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
-  color: var(--text-primary);
-}
-[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
-  color: var(--accent-strong) !important;
-  font-weight: 700;
+.st-key-theme_toggle button:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
 }
 
-.cmd-header {
+/* === Header card built from columns === */
+/* Mark the header row container so we can paint the gradient on the parent */
+[data-testid="stElementContainer"]:has(#header-row-marker) {
+  margin-bottom: 0 !important;
+}
+[data-testid="stElementContainer"]:has(#header-row-marker) + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] {
   background: linear-gradient(135deg, var(--header-bg-start) 0%, var(--header-bg-end) 100%);
-  color: var(--header-text);
-  padding: 18px 24px;
   border-radius: var(--radius-md);
-  margin-bottom: 16px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
+  padding: 18px 24px;
+  margin-bottom: 18px;
   box-shadow: var(--shadow-md);
   position: relative;
   overflow: hidden;
+  align-items: center;
+  gap: 12px !important;
 }
-.cmd-header::before {
+[data-testid="stElementContainer"]:has(#header-row-marker) + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"]::before {
   content: ""; position: absolute; inset: 0;
   background: radial-gradient(ellipse at top right, rgba(124, 195, 255, 0.12), transparent 60%);
   pointer-events: none;
+  border-radius: var(--radius-md);
 }
-.cmd-header .logo-mark {
+.hdr-left {
+  display: flex; align-items: center; gap: 14px;
+  position: relative; z-index: 1;
+}
+.hdr-left .logo-mark {
   width: 46px; height: 46px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--radius-sm);
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
-  position: relative; z-index: 1;
 }
-.cmd-header .logo-mark img {
+.hdr-left .logo-mark img {
   width: 32px; height: auto;
   filter: brightness(0) invert(1);
 }
-.cmd-header .logo-mark .fallback { font-size: 22px; }
-.cmd-header .titles { flex: 1; min-width: 0; position: relative; z-index: 1; }
-.cmd-header h1 {
+.hdr-left .logo-mark .fallback { font-size: 22px; }
+.hdr-left .titles { flex: 1; min-width: 0; }
+.hdr-left h1 {
   font-size: 22px; font-weight: 700; margin: 0;
   color: var(--header-text) !important;
   letter-spacing: -0.018em; line-height: 1.2;
 }
-.cmd-header .sub {
+.hdr-left .sub {
   font-size: 12px; color: var(--header-sub); margin-top: 4px;
   font-weight: 500; letter-spacing: 0.01em;
 }
-.cmd-header .live-pill {
+
+.hdr-right {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  position: relative; z-index: 1;
+}
+.hdr-right .live-pill {
   display: inline-flex; align-items: center; gap: 6px;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  padding: 5px 10px; border-radius: 12px;
+  padding: 5px 12px; border-radius: 12px;
   font-size: 11px; font-weight: 600;
   color: var(--header-sub);
-  position: relative; z-index: 1;
   font-family: 'JetBrains Mono', monospace;
   font-variant-numeric: tabular-nums;
 }
@@ -749,6 +775,30 @@ h1, h2, h3, h4 {
   100% { box-shadow: 0 0 0 0 rgba(33, 224, 122, 0); }
 }
 
+/* Refresh button INSIDE the header — light-on-dark styling */
+.st-key-refresh_data {
+  position: relative; z-index: 1;
+}
+.st-key-refresh_data button {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border: 1px solid rgba(255, 255, 255, 0.28) !important;
+  color: #FFFFFF !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  padding: 6px 14px !important;
+  border-radius: var(--radius-sm) !important;
+  min-height: 0 !important;
+  height: auto !important;
+  transition: all 150ms ease !important;
+  width: 100%;
+}
+.st-key-refresh_data button:hover {
+  background: rgba(255, 255, 255, 0.22) !important;
+  border-color: rgba(255, 255, 255, 0.5) !important;
+  color: #FFFFFF !important;
+}
+
+/* === Sticky KPI strip === */
 .sticky-metrics {
   position: sticky; top: 0; z-index: 100;
   background: var(--bg-page);
@@ -1027,6 +1077,7 @@ h1, h2, h3, h4 {
   background: transparent !important;
 }
 
+/* Default button styling (does not override .st-key-* specific overrides) */
 .stButton button {
   font-family: 'Inter', sans-serif !important;
   font-weight: 600 !important;
@@ -1065,7 +1116,6 @@ h1, h2, h3, h4 {
   box-shadow: 0 0 0 2px rgba(0, 122, 229, 0.18) !important;
 }
 
-/* All widget labels readable in both themes */
 .stTextInput label, .stTextArea label, .stDateInput label,
 .stMultiSelect label, .stSelectbox label, .stRadio label,
 [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p,
@@ -1165,13 +1215,12 @@ hr { border-color: var(--border-subtle) !important; margin: 20px 0 !important; }
   .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
   .metric-box { min-width: 120px; padding: 10px 12px; }
   .metric-box .val { font-size: 22px; }
-  .cmd-header .live-pill { display: none; }
 }
 @media (max-width: 640px) {
-  .cmd-header { padding: 14px 16px; gap: 10px; }
-  .cmd-header h1 { font-size: 17px; }
-  .cmd-header .logo-mark { width: 36px; height: 36px; }
-  .cmd-header .logo-mark img { width: 24px; }
+  .hdr-left { gap: 10px; }
+  .hdr-left h1 { font-size: 17px; }
+  .hdr-left .logo-mark { width: 36px; height: 36px; }
+  .hdr-left .logo-mark img { width: 24px; }
   .metric-row { gap: 6px; }
   .metric-box { min-width: calc(50% - 4px); padding: 9px 11px; }
   .metric-box .val { font-size: 19px; }
@@ -1251,55 +1300,39 @@ logo_b64 = load_logo_b64()
 logo_html = ('<img src="data:image/png;base64,' + logo_b64 + '" alt="Joby"/>'
              if logo_b64 else '<span class="fallback">🛠️</span>')
 
-st.markdown(
-    '<div class="cmd-header">'
-    + '<div class="logo-mark">' + logo_html + '</div>'
-    + '<div class="titles">'
-    + '<h1>Production Lead Command Center</h1>'
-    + '<div class="sub">Hand Layup · 527 Lamination · ' + ts_str + '</div>'
-    + '</div>'
-    + '<div class="live-pill"><span class="live-dot"></span>LIVE · cached 5min</div>'
-    + '</div>',
-    unsafe_allow_html=True,
-)
-
-# Sidebar
-with st.sidebar:
-    st.subheader("Controls")
-
-    if st.button("🔄 Refresh data", use_container_width=True, type="primary"):
-        st.cache_data.clear()
-        st.rerun()
-
-    theme_label = "🌙 Dark mode" if st.session_state.theme == "light" else "☀️ Light mode"
-    if st.button(theme_label, use_container_width=True):
+# === Top utility row: dark mode toggle, right-aligned ===
+util_l, util_r = st.columns([8, 1.2])
+with util_r:
+    theme_label = "🌙 Dark" if st.session_state.theme == "light" else "☀️ Light"
+    if st.button(theme_label, use_container_width=True, key="theme_toggle"):
         st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
         st.rerun()
 
-    st.caption("Cached for 5 min. Refresh re-pulls from Databricks.")
+# === Header card built as columns (left: logo+titles, right: LIVE pill + Refresh) ===
+st.markdown('<span id="header-row-marker"></span>', unsafe_allow_html=True)
+hdr_l, hdr_r = st.columns([5, 1.6])
+with hdr_l:
+    st.markdown(
+        '<div class="hdr-left">'
+        + '<div class="logo-mark">' + logo_html + '</div>'
+        + '<div class="titles">'
+        + '<h1>Production Lead Command Center</h1>'
+        + '<div class="sub">Hand Layup · 527 Lamination · ' + ts_str + '</div>'
+        + '</div></div>',
+        unsafe_allow_html=True,
+    )
+with hdr_r:
+    st.markdown(
+        '<div class="hdr-right">'
+        + '<div class="live-pill"><span class="live-dot"></span>LIVE · cached 5min</div>'
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+    if st.button("🔄 Refresh data", use_container_width=True, key="refresh_data"):
+        st.cache_data.clear()
+        st.rerun()
 
-    st.divider()
-
-    with st.expander("📖 Severity rules", expanded=False):
-        st.caption("🔴 **RED** — 2+ scraps OR 3+ wrinkles")
-        st.caption("🟠 **ORANGE** — 1 scrap, 3+ issues, OR 2+ wrinkles")
-        st.caption("🟡 **YELLOW** — 1+ issue, no scrap")
-        st.caption("🟢 **CLEAN** — no quality history")
-
-    with st.expander("ℹ️ About this app", expanded=False):
-        st.caption("**Lookback:** " + str(LOOKBACK_DAYS) + " days")
-        st.caption("**Areas:** 527 Lam, Kitting, Hand Trim, ME-Comp Fab")
-        st.caption("**Snapshots:**")
-        st.code(SNAPSHOT_TABLE, language=None)
-        st.caption("**Watchlist:**")
-        st.code(WATCHLIST_TABLE, language=None)
-        st.caption("**Shift hand-off:** 5:30 PM PT")
-        st.caption("**Version:** " + APP_VERSION)
-
-    if not HAS_PLOTLY:
-        st.warning("Plotly not installed — using fallback charts.")
-
-# Load data
+# === Load data ===
 try:
     with st.spinner("Pulling pipeline + 6 months of quality history…"):
         pipeline_df = load_pipeline()
@@ -2291,6 +2324,29 @@ with tab_analytics:
     st.caption(st.session_state.get("snapshot_msg", "(no snapshot status)"))
 
 
+# ============================================================
+# HELP & INFO (formerly in sidebar)
+# ============================================================
+with st.expander("ℹ️ Help & info", expanded=False):
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("**Severity rules**")
+        st.caption("🔴 RED — 2+ scraps OR 3+ wrinkles")
+        st.caption("🟠 ORANGE — 1 scrap, 3+ issues, OR 2+ wrinkles")
+        st.caption("🟡 YELLOW — 1+ issue, no scrap")
+        st.caption("🟢 CLEAN — no quality history")
+    with col_b:
+        st.markdown("**About**")
+        st.caption("**Lookback:** " + str(LOOKBACK_DAYS) + " days")
+        st.caption("**Areas:** 527 Lam, Kitting, Hand Trim, ME-Comp Fab")
+        st.caption("**Shift hand-off:** 5:30 PM PT")
+        st.caption("**Snapshots:** `" + SNAPSHOT_TABLE + "`")
+        st.caption("**Watchlist:** `" + WATCHLIST_TABLE + "`")
+
+
+# ============================================================
+# FOOTER
+# ============================================================
 st.markdown(
     '<div class="app-footer">'
     + '<div class="left">'
