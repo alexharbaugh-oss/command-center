@@ -39,7 +39,6 @@ st.set_page_config(
     page_icon="🛠️",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={},
 )
 
 LOOKBACK_DAYS = 180
@@ -48,7 +47,7 @@ WATCHLIST_TABLE = "manufacturing.default.kqw_watchlist"
 SNAPSHOT_MIN_GAP_MINUTES = 30
 MIN_DAYS_FOR_VERDICT = 14
 IMPROVEMENT_THRESHOLD = 0.25
-APP_VERSION = "v0.5"
+APP_VERSION = "v0.6"
 
 STATUS_TO_STAGE = {
     "Scheduled":         "Scheduled",
@@ -585,7 +584,7 @@ def fmt_delta(curr, prior, lower_is_better=True):
 
 
 # ============================================================
-# CSS
+# CSS — MINIMAL chrome hiding, sidebar untouched
 # ============================================================
 
 BASE_CSS = """
@@ -593,66 +592,10 @@ BASE_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&display=swap');
 
-/* === Streamlit chrome — minimal hiding, sidebar control preserved === */
+/* === Hide ONLY the safe stuff. Do NOT touch stHeader. === */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
-.stDeployButton { display: none !important; }
-[data-testid="stStatusWidget"] { display: none !important; }
-[data-testid="stDecoration"] { display: none !important; }
-[class*="viewerBadge"] { display: none !important; }
-/* === Sidebar reopen arrow — force visible at all times === */
-[data-testid="collapsedControl"],
-[data-testid="stSidebarCollapsedControl"] {
-  display: flex !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-  position: fixed !important;
-  top: 0.5rem !important;
-  left: 0.5rem !important;
-  z-index: 999999 !important;
-  background: var(--bg-card) !important;
-  border: 1px solid var(--border-default) !important;
-  border-radius: var(--radius-sm) !important;
-  padding: 4px !important;
-  box-shadow: var(--shadow-md) !important;
-}
-[data-testid="collapsedControl"] svg,
-[data-testid="stSidebarCollapsedControl"] svg,
-[data-testid="collapsedControl"] button svg,
-[data-testid="stSidebarCollapsedControl"] button svg {
-  fill: var(--accent) !important;
-  color: var(--accent) !important;
-  width: 22px !important;
-  height: 22px !important;
-}
-
-/* Sidebar's own collapse chevron (when sidebar is open) */
-[data-testid="stSidebarCollapseButton"],
-[data-testid="baseButton-headerNoPadding"] {
-  display: flex !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-}
-}
-header[data-testid="stHeader"] [data-testid="stToolbar"] { display: none !important; }
-header[data-testid="stHeader"] [data-testid="stDecoration"] { display: none !important; }
-[data-testid="collapsedControl"] {
-  display: flex !important;
-  visibility: visible !important;
-  z-index: 999999 !important;
-}
-[data-testid="collapsedControl"] svg {
-  fill: var(--accent) !important;
-  color: var(--accent) !important;
-  width: 24px !important;
-  height: 24px !important;
-}
-[data-testid="stDecoration"] { display: none; }
-[data-testid="stToolbar"] { display: none; }
-.stDeployButton { display: none !important; }
-[data-testid="stStatusWidget"] { display: none; }
-[class*="viewerBadge"] { display: none !important; }
-.stApp > header { display: none; }
+.stDeployButton, .stAppDeployButton { display: none !important; }
 
 :root {
   --joby-off-black:    #0E1620;
@@ -668,7 +611,6 @@ header[data-testid="stHeader"] [data-testid="stDecoration"] { display: none !imp
   --bg-card:           #FFFFFF;
   --bg-card-alt:       #F7F7F2;
   --bg-inset:          #F0EFE5;
-  --bg-elevated:       #FFFFFF;
   --border-subtle:     #E8E6D8;
   --border-default:    #D4D6D8;
   --border-strong:     var(--joby-gray);
@@ -730,7 +672,6 @@ h1, h2, h3, h4 {
   font-weight: 700;
 }
 
-/* === Sidebar === */
 [data-testid="stSidebar"] {
   background: var(--bg-card) !important;
   border-right: 1px solid var(--border-subtle);
@@ -743,7 +684,6 @@ h1, h2, h3, h4 {
   font-weight: 700;
 }
 
-/* === Header === */
 .cmd-header {
   background: linear-gradient(135deg, var(--header-bg-start) 0%, var(--header-bg-end) 100%);
   color: var(--header-text);
@@ -809,18 +749,14 @@ h1, h2, h3, h4 {
   100% { box-shadow: 0 0 0 0 rgba(33, 224, 122, 0); }
 }
 
-/* === Sticky KPI strip === */
 .sticky-metrics {
   position: sticky; top: 0; z-index: 100;
   background: var(--bg-page);
   padding: 10px 0 8px 0;
   margin-bottom: 18px;
   border-bottom: 1px solid var(--border-subtle);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
-/* === Metric cards === */
 .metric-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .metric-box {
   flex: 1; min-width: 140px;
@@ -863,7 +799,6 @@ h1, h2, h3, h4 {
 .val-yellow { color: var(--sev-yellow); }
 .val-green  { color: var(--sev-green); }
 
-/* === Tab header (5S replacement for subheader+caption+write) === */
 .tab-header {
   display: flex; justify-content: space-between; align-items: baseline;
   margin: 4px 0 14px 0; padding: 0 0 10px 0;
@@ -886,7 +821,6 @@ h1, h2, h3, h4 {
   font-weight: 500; letter-spacing: 0.01em;
 }
 
-/* === Empty state === */
 .empty-state {
   background: var(--bg-card);
   border: 1px dashed var(--border-default);
@@ -904,7 +838,6 @@ h1, h2, h3, h4 {
   font-size: 11.5px; color: var(--text-muted);
 }
 
-/* === Alert cards === */
 .alert-card {
   border: 1px solid var(--border-subtle);
   border-left: 4px solid;
@@ -944,7 +877,6 @@ h1, h2, h3, h4 {
 }
 .history-scrap { color: var(--sev-red); font-weight: 600; }
 
-/* === Section headers === */
 .section-header {
   background: var(--section-bg);
   color: var(--section-text);
@@ -957,7 +889,6 @@ h1, h2, h3, h4 {
   border-left: 3px solid var(--joby-blue);
 }
 
-/* === Goal card === */
 .goal-card {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
@@ -985,7 +916,6 @@ h1, h2, h3, h4 {
 .goal-card .progress-fill.warn { background: linear-gradient(to right, var(--sev-yellow), var(--sev-orange)); }
 .goal-card .progress-fill.bad  { background: linear-gradient(to right, var(--sev-red), var(--sev-orange)); }
 
-/* === Delta cards === */
 .delta-section {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
@@ -1027,7 +957,6 @@ h1, h2, h3, h4 {
   color: rgba(255,255,255,0.95);
 }
 
-/* === Watchlist cards === */
 .watch-card {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
@@ -1077,7 +1006,6 @@ h1, h2, h3, h4 {
   color: var(--joby-blue); padding: 0 4px;
 }
 
-/* === Tabs === */
 [data-testid="stTabs"] { border-bottom: 1px solid var(--border-subtle); }
 [data-testid="stTabs"] [role="tablist"] {
   gap: 4px; padding-bottom: 0; overflow-x: auto;
@@ -1099,7 +1027,6 @@ h1, h2, h3, h4 {
   background: transparent !important;
 }
 
-/* === Buttons === */
 .stButton button {
   font-family: 'Inter', sans-serif !important;
   font-weight: 600 !important;
@@ -1126,7 +1053,6 @@ h1, h2, h3, h4 {
 }
 .stButton button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* === Inputs === */
 .stTextInput input, .stTextArea textarea, .stDateInput input {
   border-radius: var(--radius-sm) !important;
   border-color: var(--border-default) !important;
@@ -1138,19 +1064,18 @@ h1, h2, h3, h4 {
   border-color: var(--accent) !important;
   box-shadow: 0 0 0 2px rgba(0, 122, 229, 0.18) !important;
 }
+
+/* All widget labels readable in both themes */
 .stTextInput label, .stTextArea label, .stDateInput label,
 .stMultiSelect label, .stSelectbox label, .stRadio label,
 [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p,
-.stRadio [role="radiogroup"] label, .stRadio [role="radiogroup"] label p {
+.stRadio [role="radiogroup"] label, .stRadio [role="radiogroup"] label p,
+.stRadio [role="radiogroup"] label > div > p {
   color: var(--text-primary) !important;
   font-weight: 600 !important;
   font-size: 13px !important;
 }
-.stRadio [role="radiogroup"] label > div > p {
-  color: var(--text-primary) !important;
-}
 
-/* === Multiselect / Selectbox FIX === */
 .stMultiSelect [data-baseweb="select"] > div,
 .stSelectbox [data-baseweb="select"] > div {
   background: var(--bg-card) !important;
@@ -1208,7 +1133,6 @@ hr { border-color: var(--border-subtle) !important; margin: 20px 0 !important; }
   overflow: hidden;
 }
 
-/* === Scrollbars === */
 *::-webkit-scrollbar { width: 10px; height: 10px; }
 *::-webkit-scrollbar-track { background: var(--bg-page); }
 *::-webkit-scrollbar-thumb {
@@ -1218,7 +1142,6 @@ hr { border-color: var(--border-subtle) !important; margin: 20px 0 !important; }
 }
 *::-webkit-scrollbar-thumb:hover { background: var(--joby-gray); }
 
-/* === Footer === */
 .app-footer {
   margin-top: 36px; padding: 14px 20px;
   background: var(--bg-card);
@@ -1238,7 +1161,6 @@ hr { border-color: var(--border-subtle) !important; margin: 20px 0 !important; }
   font-size: 10px; color: var(--text-secondary);
 }
 
-/* === Mobile/tablet === */
 @media (max-width: 1024px) {
   .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
   .metric-box { min-width: 120px; padding: 10px 12px; }
@@ -1271,7 +1193,6 @@ DARK_OVERRIDE_CSS = """
   --bg-card:           #131C26;
   --bg-card-alt:       #1A2330;
   --bg-inset:          #232C3A;
-  --bg-elevated:       #1E2834;
   --border-subtle:     #232C3A;
   --border-default:    #34404E;
   --border-strong:     #485668;
@@ -1342,9 +1263,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ============================================================
-# SIDEBAR — reorganized: actions first, info collapsed
-# ============================================================
+# Sidebar
 with st.sidebar:
     st.subheader("Controls")
 
@@ -1370,9 +1289,9 @@ with st.sidebar:
     with st.expander("ℹ️ About this app", expanded=False):
         st.caption("**Lookback:** " + str(LOOKBACK_DAYS) + " days")
         st.caption("**Areas:** 527 Lam, Kitting, Hand Trim, ME-Comp Fab")
-        st.caption("**Snapshots table:**")
+        st.caption("**Snapshots:**")
         st.code(SNAPSHOT_TABLE, language=None)
-        st.caption("**Watchlist table:**")
+        st.caption("**Watchlist:**")
         st.code(WATCHLIST_TABLE, language=None)
         st.caption("**Shift hand-off:** 5:30 PM PT")
         st.caption("**Version:** " + APP_VERSION)
@@ -1380,9 +1299,7 @@ with st.sidebar:
     if not HAS_PLOTLY:
         st.warning("Plotly not installed — using fallback charts.")
 
-# ============================================================
-# DATA LOAD
-# ============================================================
+# Load data
 try:
     with st.spinner("Pulling pipeline + 6 months of quality history…"):
         pipeline_df = load_pipeline()
@@ -1412,10 +1329,6 @@ yellow = int(sev_counts.get("YELLOW", 0))
 clean  = int(sev_counts.get("CLEAN", 0))
 
 
-# ============================================================
-# UI HELPERS
-# ============================================================
-
 def render_kpi_card(label, value, delta_text=None, delta_color=None, sub=None, val_color=None):
     val_style = ' style="color:' + str(val_color) + ';"' if val_color else ""
     delta_html = ''
@@ -1443,7 +1356,6 @@ def kpi_row_html(cards):
 
 
 def tab_header(count_html, instruction):
-    """5S replacement for subheader+caption+write triplet."""
     st.markdown(
         '<div class="tab-header">'
         + '<div class="th-count">' + count_html + '</div>'
@@ -1464,7 +1376,6 @@ def empty_state(icon, msg, sub=None):
     )
 
 
-# Sticky top KPI strip
 st.markdown(
     '<div class="sticky-metrics">'
     + kpi_row_html([
@@ -1559,18 +1470,14 @@ def render_delta_line(row, suffix=""):
     )
 
 
-# ============================================================
-# PLOTLY THEME — transparent, larger fonts, clean
-# ============================================================
+# Plotly theme
 if st.session_state.theme == "dark":
     PLOTLY_LAYOUT = dict(
         font=dict(family="Inter, sans-serif", size=12, color="#F5F4DF"),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E",
-                   tickfont=dict(size=11)),
-        yaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E",
-                   tickfont=dict(size=11)),
+        xaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E"),
+        yaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E"),
     )
     PLOTLY_NEUTRAL = "#485668"
     PLOTLY_ACCENT = "#4DA3FF"
@@ -1579,10 +1486,8 @@ else:
         font=dict(family="Inter, sans-serif", size=12, color="#0E1620"),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(gridcolor="#F0EFE5", linecolor="#D4D6D8", tickcolor="#D4D6D8",
-                   tickfont=dict(size=11)),
-        yaxis=dict(gridcolor="#F0EFE5", linecolor="#D4D6D8", tickcolor="#D4D6D8",
-                   tickfont=dict(size=11)),
+        xaxis=dict(gridcolor="#F0EFE5", linecolor="#D4D6D8", tickcolor="#D4D6D8"),
+        yaxis=dict(gridcolor="#F0EFE5", linecolor="#D4D6D8", tickcolor="#D4D6D8"),
     )
     PLOTLY_NEUTRAL = "#CDD0D1"
     PLOTLY_ACCENT = "#007AE5"
@@ -1602,11 +1507,9 @@ tab_floor, tab_next, tab_up, tab_search, tab_improve, tab_export, tab_analytics 
     "📊 Analytics",
 ])
 
-# ---------- IN LAYUP ----------
 with tab_floor:
     on_floor = filter_and_sort(scored, ["Layup"])
     flagged = on_floor[on_floor["severity"] != "CLEAN"]
-
     n_flag = len(flagged)
     flag_class = "num num-warn" if n_flag > 0 else "num"
     tab_header(
@@ -1621,11 +1524,9 @@ with tab_floor:
             render_alert(row)
 
 
-# ---------- READY TO LAYUP ----------
 with tab_next:
     next_up = filter_and_sort(scored, ["Ready to Layup"])
     flagged = next_up[next_up["severity"] != "CLEAN"]
-
     n_flag = len(flagged)
     flag_class = "num num-warn" if n_flag > 0 else "num"
     tab_header(
@@ -1640,11 +1541,9 @@ with tab_next:
             render_alert(row)
 
 
-# ---------- UPSTREAM ----------
 with tab_up:
     upstream = filter_and_sort(scored, ["Material Cutting", "Scheduled"])
     flagged = upstream[upstream["severity"].isin(["RED", "ORANGE"])]
-
     tab_header(
         '<span class="num">' + str(len(upstream)) + '</span> upstream · '
         + '<span class="num">' + str(len(flagged)) + '</span> RED/ORANGE',
@@ -1657,7 +1556,6 @@ with tab_up:
             render_alert(row, show_history=False)
 
 
-# ---------- SEARCH ----------
 with tab_search:
     tab_header(
         '<span class="num">🔍</span> Search any part',
@@ -1710,7 +1608,6 @@ with tab_search:
         empty_state("🔍", "Start typing to search", "Search across pipeline + 6 months of quality history.")
 
 
-# ---------- IMPROVEMENT TRACKER ----------
 with tab_improve:
     watchlist = load_watchlist()
     active_wl = watchlist[watchlist["status"] == "active"] if not watchlist.empty else pd.DataFrame()
@@ -1924,11 +1821,9 @@ with tab_improve:
                     if HAS_PLOTLY and not wk.empty:
                         fig = go.Figure()
                         fig.add_trace(go.Bar(x=wk["week"], y=wk["issues"], name="Issues",
-                            marker_color=PLOTLY_NEUTRAL,
-                            hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>"))
+                            marker_color=PLOTLY_NEUTRAL))
                         fig.add_trace(go.Bar(x=wk["week"], y=wk["scraps"], name="Scraps",
-                            marker_color="#C0392B",
-                            hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>"))
+                            marker_color="#C0392B"))
                         if intv_dt is not None:
                             fig.add_vline(x=pd.Timestamp(intv_dt),
                                 line_dash="dash", line_color=PLOTLY_ACCENT,
@@ -1962,7 +1857,6 @@ with tab_improve:
                 )
 
 
-# ---------- EXPORT ----------
 with tab_export:
     tab_header(
         '<span class="num">📄</span> Export current snapshot',
@@ -1994,7 +1888,6 @@ with tab_export:
             )
 
 
-# ---------- ANALYTICS ----------
 with tab_analytics:
     tab_header(
         '<span class="num">📊</span> Quality & Productivity Analytics',
@@ -2154,15 +2047,12 @@ with tab_analytics:
         if HAS_PLOTLY and not weekly_agg.empty:
             fig = go.Figure()
             fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["issues"], name="Issues",
-                marker_color=PLOTLY_NEUTRAL,
-                hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>"))
+                marker_color=PLOTLY_NEUTRAL))
             fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["scraps"], name="Scraps",
-                marker_color="#C0392B",
-                hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>"))
+                marker_color="#C0392B"))
             fig.add_trace(go.Scatter(x=weekly_agg["week"], y=weekly_agg["wrinkles"], name="Wrinkles",
                 mode="lines+markers", line=dict(color="#D4730B", width=3),
-                marker=dict(size=8),
-                hovertemplate="%{x|%b %d}<br>%{y} wrinkles<extra></extra>"))
+                marker=dict(size=8)))
             fig.update_layout(barmode="overlay", height=320,
                 margin=dict(l=10, r=10, t=10, b=20),
                 legend=dict(orientation="h", y=1.08, x=0),
@@ -2184,11 +2074,9 @@ with tab_analytics:
         if HAS_PLOTLY:
             fig = go.Figure()
             fig.add_trace(go.Bar(x=daily["created_date"], y=daily["issues"], name="Issues",
-                marker_color=PLOTLY_ACCENT,
-                hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>"))
+                marker_color=PLOTLY_ACCENT))
             fig.add_trace(go.Bar(x=daily["created_date"], y=daily["scraps"], name="Scraps",
-                marker_color="#C0392B",
-                hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>"))
+                marker_color="#C0392B"))
             fig.update_layout(barmode="group", height=260,
                 margin=dict(l=10, r=10, t=10, b=20),
                 legend=dict(orientation="h", y=1.08, x=0),
@@ -2222,11 +2110,9 @@ with tab_analytics:
             if HAS_PLOTLY and not cat_agg.empty:
                 fig = go.Figure()
                 fig.add_trace(go.Bar(y=cat_agg["category"], x=cat_agg["total"],
-                    orientation="h", name="Total", marker_color=PLOTLY_NEUTRAL,
-                    hovertemplate="%{y}<br>%{x} total<extra></extra>"))
+                    orientation="h", name="Total", marker_color=PLOTLY_NEUTRAL))
                 fig.add_trace(go.Bar(y=cat_agg["category"], x=cat_agg["scraps"],
-                    orientation="h", name="Scraps", marker_color="#C0392B",
-                    hovertemplate="%{y}<br>%{x} scraps<extra></extra>"))
+                    orientation="h", name="Scraps", marker_color="#C0392B"))
                 fig.update_layout(barmode="overlay", height=300,
                     margin=dict(l=10, r=10, t=10, b=20),
                     legend=dict(orientation="h", y=1.08, x=0),
@@ -2249,11 +2135,9 @@ with tab_analytics:
             if HAS_PLOTLY and not det.empty:
                 fig = go.Figure()
                 fig.add_trace(go.Bar(y=det["area_short"], x=det["total"],
-                    orientation="h", name="Total", marker_color=PLOTLY_ACCENT,
-                    hovertemplate="%{y}<br>%{x} issues<extra></extra>"))
+                    orientation="h", name="Total", marker_color=PLOTLY_ACCENT))
                 fig.add_trace(go.Bar(y=det["area_short"], x=det["scraps"],
-                    orientation="h", name="Scraps", marker_color="#C0392B",
-                    hovertemplate="%{y}<br>%{x} scraps<extra></extra>"))
+                    orientation="h", name="Scraps", marker_color="#C0392B"))
                 fig.update_layout(barmode="overlay", height=300,
                     margin=dict(l=10, r=10, t=10, b=20),
                     legend=dict(orientation="h", y=1.08, x=0),
@@ -2407,9 +2291,6 @@ with tab_analytics:
     st.caption(st.session_state.get("snapshot_msg", "(no snapshot status)"))
 
 
-# ============================================================
-# FOOTER
-# ============================================================
 st.markdown(
     '<div class="app-footer">'
     + '<div class="left">'
