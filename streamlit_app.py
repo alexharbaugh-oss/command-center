@@ -595,8 +595,9 @@ def fmt_delta(curr, prior, lower_is_better=True):
 # ============================================================
 
 st.markdown("""
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&display=swap');
 :root {
   /* Joby brand palette */
   --joby-off-black:    #0E1620;
