@@ -1,6 +1,6 @@
 """
 Production Lead Command Center — Hand Layup
-On-demand Quality Watch + Analytics for Team Leads.
+On-demand Quality Watch + Analytics + Improvement Tracker for Team Leads.
 
 Deploy: Streamlit Community Cloud
 Required secrets:
@@ -12,7 +12,10 @@ Locked filters per spec (4/22/26):
   - Quality:  4 comp shop areas, 6mo, issue_status!=deleted, no battery/busbar/sleeve 5-ply
   - Severity: RED if scraps>=2 OR wrinkles>=3; ORANGE if scraps>=1 OR total>=3 OR wrinkles>=2
 
-Snapshots: appends to manufacturing.default.kqw_snapshots.
+Tables:
+  manufacturing.default.kqw_snapshots  - per-shift pipeline snapshots for delta view
+  manufacturing.default.kqw_watchlist  - improvement tracker watchlist
+
 Shift hand-off: 5:30 PM PT.
 """
 
@@ -44,7 +47,10 @@ st.set_page_config(
 
 LOOKBACK_DAYS = 180
 SNAPSHOT_TABLE = "manufacturing.default.kqw_snapshots"
+WATCHLIST_TABLE = "manufacturing.default.kqw_watchlist"
 SNAPSHOT_MIN_GAP_MINUTES = 30
+MIN_DAYS_FOR_VERDICT = 14
+IMPROVEMENT_THRESHOLD = 0.25  # 25% change either way
 
 STATUS_TO_STAGE = {
     "Scheduled":         "Scheduled",
@@ -111,16 +117,8 @@ def _run_statement(sql):
 
 PIPELINE_SQL = """
 SELECT
-    issue_id,
-    order_number,
-    part_number,
-    summary,
-    components,
-    status,
-    priority,
-    due_date,
-    created_at,
-    updated_at
+    issue_id, order_number, part_number, summary, components,
+    status, priority, due_date, created_at, updated_at
 FROM manufacturing.jira.issues
 WHERE project_name = 'ME'
   AND issue_type != 'Epic'
@@ -159,7 +157,6 @@ def load_pipeline():
     df["stage"] = df["status"].map(STATUS_TO_STAGE)
     df["pn_norm"] = df["part_number"].apply(normalize_pn)
     df["stage_rank"] = df["stage"].map(STAGE_RANK)
-    # Strip timezone from updated_at so comparisons against pd.Timestamp.now() work
     if "updated_at" in df.columns:
         df["updated_at"] = pd.to_datetime(df["updated_at"], utc=True, errors="coerce").dt.tz_localize(None)
     return df
@@ -172,7 +169,6 @@ def load_quality():
         return df
     df["pn_norm"] = df["part_number"].apply(normalize_pn)
     df["clean_defect"] = df["defect_code"].apply(clean_defect_code)
-    # Parse as UTC then strip tz so all downstream comparisons against naive timestamps work
     df["created_dt"] = pd.to_datetime(df["created"], utc=True, errors="coerce").dt.tz_localize(None)
     df["created_str"] = df["created_dt"].dt.strftime("%-m/%-d")
     df["created_date"] = df["created_dt"].dt.date
@@ -183,7 +179,7 @@ def load_quality():
 
 
 # ============================================================
-# SNAPSHOT / DELTA
+# WATCHLIST
 # ============================================================
 
 def _esc(s):
@@ -191,6 +187,186 @@ def _esc(s):
         return "NULL"
     return "'" + str(s).replace("'", "''") + "'"
 
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_watchlist():
+    """Fresh watchlist data (1-min cache so writes show up fast)."""
+    sql = (
+        "SELECT pn_norm, pn_raw, summary, added_date, added_ts, "
+        "intervention_date, intervention_note, status, closed_date, close_note, last_updated "
+        "FROM " + WATCHLIST_TABLE + " "
+        "ORDER BY status ASC, added_ts DESC"
+    )
+    try:
+        return _run_query(sql)
+    except Exception:
+        return pd.DataFrame()
+
+
+def add_to_watchlist(pn_norm, pn_raw, summary, intervention_date=None, intervention_note=None):
+    """Insert if not exists. If exists and was closed, reopen; if active, no-op."""
+    existing_sql = (
+        "SELECT pn_norm, status FROM " + WATCHLIST_TABLE + " "
+        "WHERE pn_norm = " + _esc(pn_norm)
+    )
+    existing = _run_query(existing_sql)
+    if not existing.empty:
+        # Already on list — if active, do nothing; if closed, reopen
+        cur_status = existing.iloc[0]["status"]
+        if cur_status == "active":
+            return "Already on watchlist."
+        # Reopen
+        upd = (
+            "UPDATE " + WATCHLIST_TABLE + " SET "
+            "status = 'active', "
+            "added_ts = CURRENT_TIMESTAMP(), "
+            "added_date = CURRENT_DATE(), "
+            "intervention_date = " + (_esc(intervention_date.strftime("%Y-%m-%d")) if intervention_date else "NULL") + ", "
+            "intervention_note = " + _esc(intervention_note) + ", "
+            "closed_date = NULL, close_note = NULL, "
+            "last_updated = CURRENT_TIMESTAMP() "
+            "WHERE pn_norm = " + _esc(pn_norm)
+        )
+        _run_statement(upd)
+        return "Reopened on watchlist."
+
+    intv_date_sql = "DATE '" + intervention_date.strftime("%Y-%m-%d") + "'" if intervention_date else "NULL"
+    sql = (
+        "INSERT INTO " + WATCHLIST_TABLE + " VALUES ("
+        + _esc(pn_norm) + ", "
+        + _esc(pn_raw) + ", "
+        + _esc((summary or "")[:200]) + ", "
+        + "CURRENT_DATE(), CURRENT_TIMESTAMP(), "
+        + intv_date_sql + ", "
+        + _esc(intervention_note) + ", "
+        + "'active', NULL, NULL, "
+        + "CURRENT_TIMESTAMP())"
+    )
+    _run_statement(sql)
+    return "Added to watchlist."
+
+
+def update_intervention(pn_norm, intervention_date, intervention_note):
+    intv_date_sql = "DATE '" + intervention_date.strftime("%Y-%m-%d") + "'" if intervention_date else "NULL"
+    sql = (
+        "UPDATE " + WATCHLIST_TABLE + " SET "
+        "intervention_date = " + intv_date_sql + ", "
+        "intervention_note = " + _esc(intervention_note) + ", "
+        "last_updated = CURRENT_TIMESTAMP() "
+        "WHERE pn_norm = " + _esc(pn_norm)
+    )
+    _run_statement(sql)
+
+
+def close_watchlist_item(pn_norm, status, close_note):
+    """status: 'closed_success' | 'closed_fail' | 'closed_other'"""
+    sql = (
+        "UPDATE " + WATCHLIST_TABLE + " SET "
+        "status = " + _esc(status) + ", "
+        "closed_date = CURRENT_DATE(), "
+        "close_note = " + _esc(close_note) + ", "
+        "last_updated = CURRENT_TIMESTAMP() "
+        "WHERE pn_norm = " + _esc(pn_norm)
+    )
+    _run_statement(sql)
+
+
+def delete_from_watchlist(pn_norm):
+    sql = "DELETE FROM " + WATCHLIST_TABLE + " WHERE pn_norm = " + _esc(pn_norm)
+    _run_statement(sql)
+
+
+def compute_improvement(quality_df, pn_norm, intervention_date=None):
+    """
+    Returns dict with before/after counts and verdict.
+
+    With intervention_date:
+      before = 30 days ending on intervention_date
+      after  = days since intervention_date (capped at 30)
+
+    Without intervention_date:
+      before = 30-60 days ago
+      after  = last 30 days
+    """
+    if quality_df.empty:
+        return {"before": {"issues": 0, "scraps": 0, "wrinkles": 0},
+                "after":  {"issues": 0, "scraps": 0, "wrinkles": 0},
+                "verdict": "no_data", "days_after": 0, "before_window": 30, "after_window": 30}
+
+    part_q = quality_df[quality_df["pn_norm"] == pn_norm].copy()
+    today = pd.Timestamp.now().normalize()
+
+    if intervention_date is not None:
+        intv = pd.Timestamp(intervention_date).normalize()
+        days_after = max(0, (today - intv).days)
+        after_window = min(30, days_after) if days_after > 0 else 0
+        before_window = 30
+        before_start = intv - pd.Timedelta(days=30)
+        before_end   = intv
+        after_start  = intv
+        after_end    = intv + pd.Timedelta(days=after_window)
+    else:
+        days_after = 30
+        after_window = 30
+        before_window = 30
+        before_start = today - pd.Timedelta(days=60)
+        before_end   = today - pd.Timedelta(days=30)
+        after_start  = today - pd.Timedelta(days=30)
+        after_end    = today
+
+    def _bucket(start, end):
+        sub = part_q[(part_q["created_dt"] >= start) & (part_q["created_dt"] < end)]
+        if sub.empty:
+            return {"issues": 0, "scraps": 0, "wrinkles": 0}
+        return {
+            "issues":   int(len(sub)),
+            "scraps":   int((sub["disposition"] == "Scrap").sum()),
+            "wrinkles": int(sub["is_wrinkle"].sum()),
+        }
+
+    before = _bucket(before_start, before_end)
+    after  = _bucket(after_start,  after_end)
+
+    # Verdict logic
+    if intervention_date is not None and days_after < MIN_DAYS_FOR_VERDICT:
+        verdict = "too_soon"
+    elif before["issues"] == 0 and after["issues"] == 0:
+        verdict = "no_data"
+    else:
+        # Use scrap count as primary; fall back to wrinkles, then total issues
+        b_score = before["scraps"] * 3 + before["wrinkles"] * 2 + before["issues"]
+        a_score = after["scraps"]  * 3 + after["wrinkles"]  * 2 + after["issues"]
+        # Normalize after to before window length if windows differ
+        if after_window > 0 and after_window != before_window:
+            a_score_normalized = a_score * (before_window / after_window)
+        else:
+            a_score_normalized = a_score
+
+        if b_score == 0:
+            # No prior issues — can only get worse
+            verdict = "worsening" if a_score > 0 else "flat"
+        else:
+            change = (a_score_normalized - b_score) / b_score
+            if change <= -IMPROVEMENT_THRESHOLD:
+                verdict = "improving"
+            elif change >= IMPROVEMENT_THRESHOLD:
+                verdict = "worsening"
+            else:
+                verdict = "flat"
+
+    return {
+        "before":         before,
+        "after":          after,
+        "verdict":        verdict,
+        "days_after":     days_after,
+        "before_window":  before_window,
+        "after_window":   after_window,
+    }
+
+
+# ============================================================
+# SNAPSHOT / DELTA
+# ============================================================
 
 def _shift_for(now_pt):
     return "AM" if (now_pt.hour, now_pt.minute) < (17, 30) else "PM"
@@ -226,9 +402,7 @@ def write_snapshot_if_due(scored, now_pt):
     rows_sql = []
     for _, r in scored.iterrows():
         row_sql = (
-            "(TIMESTAMP '" + ts_str + "', "
-            "DATE '" + snap_date_str + "', "
-            "'" + shift + "', "
+            "(TIMESTAMP '" + ts_str + "', DATE '" + snap_date_str + "', '" + shift + "', "
             + _esc(r.get("issue_id")) + ", "
             + _esc(r.get("order_number")) + ", "
             + _esc(r.get("part_number")) + ", "
@@ -264,8 +438,7 @@ def load_prior_snapshot(now_pt):
     sql = (
         "WITH ranked AS ("
         "SELECT *, ROW_NUMBER() OVER (PARTITION BY pn_norm ORDER BY snapshot_ts DESC) AS rn "
-        "FROM " + SNAPSHOT_TABLE + " "
-        "WHERE " + cutoff_clause + ") "
+        "FROM " + SNAPSHOT_TABLE + " WHERE " + cutoff_clause + ") "
         "SELECT snapshot_ts, snapshot_date, shift, me_key, mfid, pn_raw, pn_norm, "
         "summary, status, stage, severity, "
         "total_issues, scraps, wrinkles, rework, pending "
@@ -421,12 +594,8 @@ def compute_kpis(quality):
     pending = int(((disp == "") | (disp == "Pending")).sum())
     wrinkles = int(quality["is_wrinkle"].sum())
     return {
-        "issues":       n,
-        "scraps":       scraps,
-        "wrinkles":     wrinkles,
-        "rework":       rework,
-        "pending":      pending,
-        "uai":          uai,
+        "issues":       n, "scraps": scraps, "wrinkles": wrinkles,
+        "rework":       rework, "pending": pending, "uai": uai,
         "scrap_rate":   100.0 * scraps / n if n else 0.0,
         "wrinkle_rate": 100.0 * wrinkles / n if n else 0.0,
     }
@@ -531,6 +700,42 @@ st.markdown("""
 .delta-summary h3 { margin: 0 0 6px 0; font-size: 16px; color: white; }
 .delta-summary .sub { font-size: 12px; color: #94a3b8; }
 .delta-summary .stats { font-size: 13px; margin-top: 8px; }
+.watch-card {
+  background: #f9f9f9; border-radius: 8px; padding: 14px 18px;
+  margin-bottom: 12px; border-left: 4px solid #666;
+}
+.watch-card.improving { border-left-color: #1D9E75; background: #e8f6f0; }
+.watch-card.flat      { border-left-color: #d4920b; background: #fef5e7; }
+.watch-card.worsening { border-left-color: #c0392b; background: #fae4e1; }
+.watch-card.too_soon  { border-left-color: #2471a3; background: #e4eff7; }
+.watch-card.no_data   { border-left-color: #999; background: #f4f4f4; }
+.watch-card h4 { margin: 0 0 6px 0; font-size: 14px; color: #1a1a1a; }
+.watch-card .meta { font-size: 11px; color: #555; margin-bottom: 8px; }
+.watch-card .verdict {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: 3px; margin-right: 8px;
+  letter-spacing: 0.4px;
+}
+.verdict-improving { background: #1D9E75; color: white; }
+.verdict-flat      { background: #d4920b; color: white; }
+.verdict-worsening { background: #c0392b; color: white; }
+.verdict-too_soon  { background: #2471a3; color: white; }
+.verdict-no_data   { background: #999; color: white; }
+.beforeafter {
+  display: flex; gap: 14px; margin: 8px 0;
+  font-size: 12px;
+}
+.beforeafter .ba-block {
+  flex: 1; background: white; border-radius: 4px; padding: 8px 10px;
+}
+.beforeafter .ba-label {
+  font-size: 10px; color: #666; text-transform: uppercase;
+  letter-spacing: 0.4px; margin-bottom: 2px;
+}
+.beforeafter .ba-vals { font-size: 13px; color: #1a1a1a; font-weight: 600; }
+.beforeafter .ba-arrow {
+  align-self: center; font-size: 18px; color: #666; padding: 0 4px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -562,9 +767,10 @@ with st.sidebar:
     st.caption("Lookback: " + str(LOOKBACK_DAYS) + " days")
     st.caption("Areas: 527 Lam, Kitting, Hand Trim, ME-Comp Fab")
     st.caption("Snapshots: " + SNAPSHOT_TABLE)
+    st.caption("Watchlist: " + WATCHLIST_TABLE)
     st.caption("Shift hand-off: 5:30 PM PT")
     if not HAS_PLOTLY:
-        st.warning("Plotly not installed — using fallback charts. Add `plotly` to requirements.txt.")
+        st.warning("Plotly not installed — using fallback charts.")
 
 # Load data
 try:
@@ -621,18 +827,14 @@ def kpi_row_html(cards):
     parts = ['<div class="metric-row">']
     for c in cards:
         parts.append(render_kpi_card(
-            c.get("label", ""),
-            c.get("value", ""),
-            c.get("delta_text"),
-            c.get("delta_color"),
-            c.get("sub"),
-            c.get("val_color"),
+            c.get("label", ""), c.get("value", ""),
+            c.get("delta_text"), c.get("delta_color"),
+            c.get("sub"), c.get("val_color"),
         ))
     parts.append('</div>')
     return "".join(parts)
 
 
-# Headline pipeline strip
 st.markdown(kpi_row_html([
     {"label": "Pipeline parts", "value": len(scored)},
     {"label": "🔴 Red",    "value": red,    "val_color": "#c0392b"},
@@ -735,11 +937,12 @@ def render_delta_line(row, suffix=""):
 # TABS
 # ============================================================
 
-tab_floor, tab_next, tab_up, tab_search, tab_export, tab_analytics = st.tabs([
+tab_floor, tab_next, tab_up, tab_search, tab_improve, tab_export, tab_analytics = st.tabs([
     "🏭 In Layup",
     "📋 Ready to Layup",
     "⏰ Upstream",
     "🔍 Search",
+    "🎯 Improvement Tracker",
     "📄 Export",
     "📊 Analytics",
 ])
@@ -831,6 +1034,320 @@ with tab_search:
         st.info("Start typing to search.")
 
 
+# ============================================================
+# IMPROVEMENT TRACKER TAB
+# ============================================================
+with tab_improve:
+    st.subheader("🎯 Improvement Tracker")
+    st.caption("Watch risk parts. Log corrective actions. Verify if they actually worked.")
+
+    # Load watchlist
+    watchlist = load_watchlist()
+    active_wl = watchlist[watchlist["status"] == "active"] if not watchlist.empty else pd.DataFrame()
+    closed_wl = watchlist[watchlist["status"] != "active"] if not watchlist.empty else pd.DataFrame()
+
+    # Build a search universe from quality + pipeline
+    search_universe = []
+    seen_pns = set()
+    if not scored.empty:
+        for _, r in scored.iterrows():
+            pn = r.get("pn_norm") or ""
+            if pn and pn not in seen_pns:
+                seen_pns.add(pn)
+                search_universe.append({
+                    "pn_norm": pn,
+                    "pn_raw": r.get("part_number") or "",
+                    "summary": r.get("summary") or "",
+                    "in_pipeline": True,
+                    "severity": r.get("severity") or "",
+                })
+    if not quality_df.empty:
+        q_unique = quality_df.drop_duplicates(subset=["pn_norm"])
+        for _, r in q_unique.iterrows():
+            pn = r.get("pn_norm") or ""
+            if pn and pn not in seen_pns:
+                seen_pns.add(pn)
+                search_universe.append({
+                    "pn_norm": pn,
+                    "pn_raw": r.get("part_number") or "",
+                    "summary": (r.get("part_description") or r.get("issue_title") or "")[:120],
+                    "in_pipeline": False,
+                    "severity": "",
+                })
+
+    # ---- Section 1: Add to watchlist ----
+    st.markdown('<div class="section-header">ADD A PART TO WATCH</div>', unsafe_allow_html=True)
+
+    add_q = st.text_input(
+        "Search by part name or part number to add",
+        placeholder="e.g. forward floor bracket   |   216159-001",
+        key="wl_search",
+    )
+    if add_q:
+        ql = add_q.lower().strip()
+        matches = [u for u in search_universe
+                   if ql in u["pn_norm"].lower() or ql in u["pn_raw"].lower() or ql in u["summary"].lower()]
+        matches = matches[:8]
+        if matches:
+            st.caption("Matches — click to add")
+            for u in matches:
+                col_a, col_b, col_c = st.columns([4, 1.5, 1])
+                with col_a:
+                    on_list = (not active_wl.empty) and (u["pn_norm"] in set(active_wl["pn_norm"]))
+                    pipe_tag = " 🏭" if u["in_pipeline"] else ""
+                    sev_tag = ""
+                    if u["severity"] in SEV_COLOR:
+                        sev_tag = (' <span style="color:' + SEV_COLOR[u["severity"]]
+                                   + ';font-weight:700;font-size:11px;">' + u["severity"] + '</span>')
+                    listed = " <span style='color:#1D9E75;font-size:11px;'>· on watchlist</span>" if on_list else ""
+                    st.markdown(
+                        '<div style="font-size:13px;">'
+                        + '<b>' + u["summary"][:80] + '</b>' + pipe_tag + sev_tag + listed
+                        + '<br/><span style="color:#666;font-size:11px;">' + u["pn_raw"] + '</span>'
+                        + '</div>',
+                        unsafe_allow_html=True,
+                    )
+                with col_b:
+                    pass
+                with col_c:
+                    btn_key = "add_" + u["pn_norm"]
+                    if st.button("➕ Watch", key=btn_key, disabled=on_list, use_container_width=True):
+                        try:
+                            msg = add_to_watchlist(u["pn_norm"], u["pn_raw"], u["summary"])
+                            st.cache_data.clear()
+                            st.success(msg + " — refreshing…")
+                            st.rerun()
+                        except Exception as e:
+                            st.error("Add failed: " + str(e))
+        else:
+            st.caption("No matches.")
+
+    # ---- Section 2: Active watchlist ----
+    st.markdown('<div class="section-header">ACTIVE WATCHLIST · ' + str(len(active_wl)) + ' parts</div>',
+                unsafe_allow_html=True)
+
+    if active_wl.empty:
+        st.info("Nothing on the watchlist yet. Add a part above to start tracking.")
+    else:
+        # Verdict label/css map
+        verdict_label = {
+            "improving": "✅ IMPROVING",
+            "flat":      "⚠️ FLAT",
+            "worsening": "🔴 WORSENING",
+            "too_soon":  "⏳ TOO SOON",
+            "no_data":   "— NO DATA",
+        }
+        verdict_class = {
+            "improving": "verdict-improving",
+            "flat":      "verdict-flat",
+            "worsening": "verdict-worsening",
+            "too_soon":  "verdict-too_soon",
+            "no_data":   "verdict-no_data",
+        }
+        card_class = {
+            "improving": "improving",
+            "flat":      "flat",
+            "worsening": "worsening",
+            "too_soon":  "too_soon",
+            "no_data":   "no_data",
+        }
+
+        for _, w in active_wl.iterrows():
+            pn = w["pn_norm"]
+            intv = w["intervention_date"]
+            intv_dt = pd.to_datetime(intv).date() if pd.notna(intv) else None
+
+            comp = compute_improvement(quality_df, pn, intv_dt)
+
+            # Pipeline status
+            pipe_match = scored[scored["pn_norm"] == pn]
+            in_pipeline = not pipe_match.empty
+            cur_stage = pipe_match.iloc[0]["stage"] if in_pipeline else "—"
+            cur_sev = pipe_match.iloc[0]["severity"] if in_pipeline else "—"
+            cur_sev_color = SEV_COLOR.get(cur_sev, "#666")
+
+            # Verdict
+            v = comp["verdict"]
+            vc = card_class.get(v, "no_data")
+            vlabel = verdict_label.get(v, "—")
+            vclass = verdict_class.get(v, "verdict-no_data")
+
+            intv_line = ""
+            if intv_dt is not None:
+                intv_line = (
+                    "Intervention <b>" + intv_dt.strftime("%-m/%-d") + "</b> ("
+                    + str(comp["days_after"]) + " days ago)"
+                )
+                if w.get("intervention_note"):
+                    intv_line += " — " + str(w.get("intervention_note"))[:120]
+            else:
+                intv_line = "<i>No intervention logged yet — comparing last 30d vs prior 30d</i>"
+
+            before = comp["before"]; after = comp["after"]
+            ba_html = (
+                '<div class="beforeafter">'
+                + '<div class="ba-block">'
+                + '<div class="ba-label">BEFORE · last ' + str(comp["before_window"]) + ' days</div>'
+                + '<div class="ba-vals">' + str(before["issues"]) + ' issues · '
+                + str(before["scraps"]) + ' scrap · ' + str(before["wrinkles"]) + ' wrinkle</div>'
+                + '</div>'
+                + '<div class="ba-arrow">→</div>'
+                + '<div class="ba-block">'
+                + '<div class="ba-label">AFTER · ' + str(comp["after_window"]) + ' days</div>'
+                + '<div class="ba-vals">' + str(after["issues"]) + ' issues · '
+                + str(after["scraps"]) + ' scrap · ' + str(after["wrinkles"]) + ' wrinkle</div>'
+                + '</div>'
+                + '</div>'
+            )
+
+            pipe_tag = ""
+            if in_pipeline:
+                pipe_tag = (
+                    ' <span style="color:' + cur_sev_color + ';font-weight:700;font-size:11px;">'
+                    + cur_sev + '</span> in <b>' + cur_stage + '</b>'
+                )
+            else:
+                pipe_tag = ' <span style="color:#999;font-size:11px;">not currently in pipeline</span>'
+
+            card_html = (
+                '<div class="watch-card ' + vc + '">'
+                + '<span class="verdict ' + vclass + '">' + vlabel + '</span>'
+                + '<b>' + (w.get("summary") or "")[:90] + '</b>' + pipe_tag
+                + '<div class="meta">' + intv_line + ' · '
+                + str(w.get("pn_raw") or "") + '</div>'
+                + ba_html
+                + '</div>'
+            )
+            st.markdown(card_html, unsafe_allow_html=True)
+
+            # Per-part action row inside an expander to keep things tidy
+            with st.expander("Edit / Close · " + str(w.get("pn_raw") or pn), expanded=False):
+                col1, col2, col3 = st.columns([2, 3, 1.2])
+                with col1:
+                    new_intv = st.date_input(
+                        "Intervention date",
+                        value=intv_dt if intv_dt else None,
+                        key="intv_" + pn, format="MM/DD/YYYY",
+                    )
+                with col2:
+                    new_note = st.text_input(
+                        "What was done",
+                        value=str(w.get("intervention_note") or ""),
+                        key="intvnote_" + pn,
+                        placeholder="e.g. MWI rev 4/12, retrained operators",
+                    )
+                with col3:
+                    st.write("")
+                    if st.button("💾 Save", key="save_" + pn, use_container_width=True):
+                        try:
+                            update_intervention(pn, new_intv, new_note or None)
+                            st.cache_data.clear()
+                            st.success("Saved.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error("Save failed: " + str(e))
+
+                col4, col5, col6, col7 = st.columns(4)
+                with col4:
+                    if st.button("✅ Closed-success", key="cs_" + pn, use_container_width=True):
+                        try:
+                            close_watchlist_item(pn, "closed_success", new_note or None)
+                            st.cache_data.clear()
+                            st.success("Closed as success.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+                with col5:
+                    if st.button("🔴 Closed-fail", key="cf_" + pn, use_container_width=True):
+                        try:
+                            close_watchlist_item(pn, "closed_fail", new_note or None)
+                            st.cache_data.clear()
+                            st.success("Closed as fail.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+                with col6:
+                    if st.button("⚪ Closed-other", key="co_" + pn, use_container_width=True):
+                        try:
+                            close_watchlist_item(pn, "closed_other", new_note or None)
+                            st.cache_data.clear()
+                            st.success("Closed.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+                with col7:
+                    if st.button("🗑️ Remove", key="rm_" + pn, use_container_width=True):
+                        try:
+                            delete_from_watchlist(pn)
+                            st.cache_data.clear()
+                            st.success("Removed.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+
+                # Mini weekly trend chart
+                part_q = quality_df[quality_df["pn_norm"] == pn].copy()
+                if not part_q.empty:
+                    part_q["week"] = part_q["created_dt"].dt.to_period("W").dt.start_time
+                    wk = part_q.groupby("week").agg(
+                        issues=("issue_id", "count"),
+                        scraps=("disposition", lambda s: int((s == "Scrap").sum())),
+                        wrinkles=("is_wrinkle", "sum"),
+                    ).reset_index()
+                    if HAS_PLOTLY and not wk.empty:
+                        fig = go.Figure()
+                        fig.add_trace(go.Bar(
+                            x=wk["week"], y=wk["issues"],
+                            name="Issues", marker_color="#94a3b8",
+                            hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>",
+                        ))
+                        fig.add_trace(go.Bar(
+                            x=wk["week"], y=wk["scraps"],
+                            name="Scraps", marker_color="#c0392b",
+                            hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>",
+                        ))
+                        if intv_dt is not None:
+                            fig.add_vline(
+                                x=pd.Timestamp(intv_dt),
+                                line_dash="dash", line_color="#2471a3",
+                                annotation_text="Intervention",
+                                annotation_position="top",
+                            )
+                        fig.update_layout(
+                            barmode="overlay", height=200,
+                            margin=dict(l=20, r=20, t=20, b=20),
+                            legend=dict(orientation="h", y=1.05, x=0),
+                            xaxis_title=None, yaxis_title=None,
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.bar_chart(wk.set_index("week")[["issues", "scraps"]], height=180)
+                else:
+                    st.caption("No quality history found for this part in the last 6 months.")
+
+    # ---- Section 3: Closed cases ----
+    if not closed_wl.empty:
+        with st.expander("📚 Closed cases · " + str(len(closed_wl)) + " resolved", expanded=False):
+            for _, w in closed_wl.iterrows():
+                status_lbl = {
+                    "closed_success": "✅ Success",
+                    "closed_fail":    "🔴 Fail",
+                    "closed_other":   "⚪ Other",
+                }.get(w["status"], w["status"])
+                cd = pd.to_datetime(w["closed_date"]).date() if pd.notna(w["closed_date"]) else None
+                cd_str = cd.strftime("%-m/%-d/%y") if cd else "?"
+                note = (w.get("close_note") or w.get("intervention_note") or "—")[:140]
+                st.markdown(
+                    '<div style="padding:6px 10px;background:#f4f4f4;border-radius:4px;margin-bottom:6px;font-size:12px;">'
+                    + '<b>' + status_lbl + '</b> · ' + cd_str + ' · '
+                    + '<b>' + (w.get("summary") or "")[:80] + '</b> '
+                    + '<span style="color:#666;">(' + str(w.get("pn_raw") or "") + ')</span>'
+                    + '<br/><span style="color:#444;font-size:11px;">' + note + '</span>'
+                    + '</div>',
+                    unsafe_allow_html=True,
+                )
+
+
 # ---------- EXPORT ----------
 with tab_export:
     st.subheader("Export")
@@ -868,22 +1385,15 @@ with tab_analytics:
     fcol1, fcol2, fcol3 = st.columns([2, 2, 2])
     with fcol1:
         date_range = st.radio(
-            "Date range",
-            ["7d", "30d", "90d", "6mo"],
+            "Date range", ["7d", "30d", "90d", "6mo"],
             horizontal=True, index=1, key="date_range",
         )
     with fcol2:
         all_areas = sorted(quality_df["originating_area"].dropna().unique().tolist()) if not quality_df.empty else []
-        area_filter = st.multiselect(
-            "Originating area",
-            all_areas, default=all_areas, key="area_filter",
-        )
+        area_filter = st.multiselect("Originating area", all_areas, default=all_areas, key="area_filter")
     with fcol3:
         all_disps = sorted(quality_df["disposition_clean"].dropna().unique().tolist()) if not quality_df.empty else []
-        disp_filter = st.multiselect(
-            "Disposition",
-            all_disps, default=all_disps, key="disp_filter",
-        )
+        disp_filter = st.multiselect("Disposition", all_disps, default=all_disps, key="disp_filter")
 
     window_days_map = {"7d": 7, "30d": 30, "90d": 90, "6mo": 180}
     window_days = window_days_map[date_range]
@@ -907,12 +1417,9 @@ with tab_analytics:
     kpi_curr = compute_kpis(q_curr)
     kpi_prior = compute_kpis(q_prior)
 
-    # ---- Quality KPIs ----
     st.markdown(
-        '<div class="section-header">QUALITY KPIs · '
-        + period_label.upper()
-        + ' vs prior ' + period_label
-        + '</div>',
+        '<div class="section-header">QUALITY KPIs · ' + period_label.upper()
+        + ' vs prior ' + period_label + '</div>',
         unsafe_allow_html=True,
     )
 
@@ -925,8 +1432,7 @@ with tab_analytics:
 
     quality_cards = [
         {"label": "Total issues", "value": kpi_curr["issues"],
-         "delta_text": issues_d, "delta_color": issues_c,
-         "sub": "prior: " + str(kpi_prior["issues"])},
+         "delta_text": issues_d, "delta_color": issues_c, "sub": "prior: " + str(kpi_prior["issues"])},
         {"label": "Scraps", "value": kpi_curr["scraps"],
          "delta_text": scrap_d, "delta_color": scrap_c,
          "sub": "prior: " + str(kpi_prior["scraps"]), "val_color": "#c0392b"},
@@ -945,7 +1451,6 @@ with tab_analytics:
     ]
     st.markdown(kpi_row_html(quality_cards), unsafe_allow_html=True)
 
-    # ---- Productivity KPIs ----
     st.markdown('<div class="section-header">PRODUCTIVITY KPIs · pipeline state right now</div>',
                 unsafe_allow_html=True)
 
@@ -955,7 +1460,6 @@ with tab_analytics:
 
     ready_parts = pipeline_df[pipeline_df["stage"] == "Ready to Layup"].copy()
     if not ready_parts.empty and "updated_at" in ready_parts.columns:
-        # updated_at is already timezone-naive thanks to load_pipeline()
         now_naive = pd.Timestamp.now()
         try:
             ready_parts["age_days"] = (now_naive - ready_parts["updated_at"]).dt.days
@@ -982,7 +1486,6 @@ with tab_analytics:
     ]
     st.markdown(kpi_row_html(prod_cards), unsafe_allow_html=True)
 
-    # ---- ARTS goal tracker ----
     st.markdown('<div class="section-header">WRINKLE ARTS GOAL · 50% reduction target</div>',
                 unsafe_allow_html=True)
 
@@ -1001,17 +1504,11 @@ with tab_analytics:
             on_pace = current_wk <= target
 
             if on_pace:
-                status_text = "✅ ON PACE"
-                status_class = "on-pace"
-                fill_class = ""
+                status_text = "✅ ON PACE"; status_class = "on-pace"; fill_class = ""
             elif current_wk < baseline_wk:
-                status_text = "⚠️ OFF PACE"
-                status_class = "off-pace"
-                fill_class = "warn"
+                status_text = "⚠️ OFF PACE"; status_class = "off-pace"; fill_class = "warn"
             else:
-                status_text = "🔴 GETTING WORSE"
-                status_class = "off-pace"
-                fill_class = "bad"
+                status_text = "🔴 GETTING WORSE"; status_class = "off-pace"; fill_class = "bad"
 
             change_pct = 100 * (current_wk - baseline_wk) / max(1, baseline_wk)
             change_sign = "+" if change_pct > 0 else ""
@@ -1039,7 +1536,6 @@ with tab_analytics:
     else:
         st.info("No wrinkle data in selected window.")
 
-    # ---- Weekly trend chart ----
     st.markdown('<div class="section-header">WEEKLY ISSUE & SCRAP TREND · last 12 weeks</div>',
                 unsafe_allow_html=True)
 
@@ -1054,22 +1550,16 @@ with tab_analytics:
 
         if HAS_PLOTLY and not weekly_agg.empty:
             fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=weekly_agg["week"], y=weekly_agg["issues"],
+            fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["issues"],
                 name="Total issues", marker_color="#94a3b8",
-                hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>",
-            ))
-            fig.add_trace(go.Bar(
-                x=weekly_agg["week"], y=weekly_agg["scraps"],
+                hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>"))
+            fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["scraps"],
                 name="Scraps", marker_color="#c0392b",
-                hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>",
-            ))
-            fig.add_trace(go.Scatter(
-                x=weekly_agg["week"], y=weekly_agg["wrinkles"],
+                hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>"))
+            fig.add_trace(go.Scatter(x=weekly_agg["week"], y=weekly_agg["wrinkles"],
                 name="Wrinkles", mode="lines+markers",
                 line=dict(color="#d4730b", width=3),
-                hovertemplate="%{x|%b %d}<br>%{y} wrinkles<extra></extra>",
-            ))
+                hovertemplate="%{x|%b %d}<br>%{y} wrinkles<extra></extra>"))
             fig.update_layout(
                 barmode="overlay", height=320,
                 margin=dict(l=20, r=20, t=10, b=20),
@@ -1082,7 +1572,6 @@ with tab_analytics:
             chart_data = weekly_agg.set_index("week")[["issues", "scraps", "wrinkles"]]
             st.bar_chart(chart_data, height=260)
 
-    # ---- Daily activity (last 30 days) ----
     st.markdown('<div class="section-header">DAILY ACTIVITY · last 30 days</div>',
                 unsafe_allow_html=True)
 
@@ -1096,22 +1585,16 @@ with tab_analytics:
 
         if HAS_PLOTLY:
             fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=daily["created_date"], y=daily["issues"],
+            fig.add_trace(go.Bar(x=daily["created_date"], y=daily["issues"],
                 name="Issues", marker_color="#2471a3",
-                hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>",
-            ))
-            fig.add_trace(go.Bar(
-                x=daily["created_date"], y=daily["scraps"],
+                hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>"))
+            fig.add_trace(go.Bar(x=daily["created_date"], y=daily["scraps"],
                 name="Scraps", marker_color="#c0392b",
-                hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>",
-            ))
-            fig.update_layout(
-                barmode="group", height=260,
+                hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>"))
+            fig.update_layout(barmode="group", height=260,
                 margin=dict(l=20, r=20, t=10, b=20),
                 legend=dict(orientation="h", y=1.05, x=0),
-                xaxis_title=None, yaxis_title=None,
-            )
+                xaxis_title=None, yaxis_title=None)
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.bar_chart(daily.set_index("created_date")[["issues", "scraps"]], height=240)
@@ -1125,7 +1608,6 @@ with tab_analytics:
                 + str(int(spike["wrinkles"])) + " wrinkles)"
             )
 
-    # ---- Defect drivers + Detection points (side by side) ----
     col_l, col_r = st.columns(2)
 
     with col_l:
@@ -1140,24 +1622,16 @@ with tab_analytics:
 
             if HAS_PLOTLY and not cat_agg.empty:
                 fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    y=cat_agg["category"], x=cat_agg["total"],
-                    orientation="h", name="Total",
-                    marker_color="#94a3b8",
-                    hovertemplate="%{y}<br>%{x} total<extra></extra>",
-                ))
-                fig.add_trace(go.Bar(
-                    y=cat_agg["category"], x=cat_agg["scraps"],
-                    orientation="h", name="Scraps",
-                    marker_color="#c0392b",
-                    hovertemplate="%{y}<br>%{x} scraps<extra></extra>",
-                ))
-                fig.update_layout(
-                    barmode="overlay", height=300,
+                fig.add_trace(go.Bar(y=cat_agg["category"], x=cat_agg["total"],
+                    orientation="h", name="Total", marker_color="#94a3b8",
+                    hovertemplate="%{y}<br>%{x} total<extra></extra>"))
+                fig.add_trace(go.Bar(y=cat_agg["category"], x=cat_agg["scraps"],
+                    orientation="h", name="Scraps", marker_color="#c0392b",
+                    hovertemplate="%{y}<br>%{x} scraps<extra></extra>"))
+                fig.update_layout(barmode="overlay", height=300,
                     margin=dict(l=20, r=20, t=10, b=20),
                     legend=dict(orientation="h", y=1.05, x=0),
-                    xaxis_title=None, yaxis_title=None,
-                )
+                    xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig, use_container_width=True)
             elif not cat_agg.empty:
                 st.bar_chart(cat_agg.set_index("category")[["total", "scraps"]], height=300)
@@ -1177,31 +1651,22 @@ with tab_analytics:
 
             if HAS_PLOTLY and not det.empty:
                 fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    y=det["area_short"], x=det["total"],
-                    orientation="h", name="Total",
-                    marker_color="#2471a3",
-                    hovertemplate="%{y}<br>%{x} issues<extra></extra>",
-                ))
-                fig.add_trace(go.Bar(
-                    y=det["area_short"], x=det["scraps"],
-                    orientation="h", name="Scraps",
-                    marker_color="#c0392b",
-                    hovertemplate="%{y}<br>%{x} scraps<extra></extra>",
-                ))
-                fig.update_layout(
-                    barmode="overlay", height=300,
+                fig.add_trace(go.Bar(y=det["area_short"], x=det["total"],
+                    orientation="h", name="Total", marker_color="#2471a3",
+                    hovertemplate="%{y}<br>%{x} issues<extra></extra>"))
+                fig.add_trace(go.Bar(y=det["area_short"], x=det["scraps"],
+                    orientation="h", name="Scraps", marker_color="#c0392b",
+                    hovertemplate="%{y}<br>%{x} scraps<extra></extra>"))
+                fig.update_layout(barmode="overlay", height=300,
                     margin=dict(l=20, r=20, t=10, b=20),
                     legend=dict(orientation="h", y=1.05, x=0),
-                    xaxis_title=None, yaxis_title=None,
-                )
+                    xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig, use_container_width=True)
             elif not det.empty:
                 st.bar_chart(det.set_index("area_short")[["total", "scraps"]], height=300)
         else:
             st.info("No data in selected window.")
 
-    # ---- Day-of-week wrinkle pattern (last 90 days) ----
     st.markdown('<div class="section-header">WRINKLE DAY-OF-WEEK PATTERN · last 90 days</div>',
                 unsafe_allow_html=True)
 
@@ -1211,15 +1676,11 @@ with tab_analytics:
         dow_agg = wnk_dow.groupby(["dow_n", "dow"]).size().reset_index(name="count")
         dow_agg = dow_agg.sort_values("dow_n")
         if HAS_PLOTLY and not dow_agg.empty:
-            fig = px.bar(
-                dow_agg, x="dow", y="count",
+            fig = px.bar(dow_agg, x="dow", y="count",
                 color="count", color_continuous_scale="Reds",
-                labels={"dow": "Day", "count": "Wrinkles"},
-            )
-            fig.update_layout(
-                height=240, margin=dict(l=20, r=20, t=10, b=20),
-                showlegend=False, coloraxis_showscale=False,
-            )
+                labels={"dow": "Day", "count": "Wrinkles"})
+            fig.update_layout(height=240, margin=dict(l=20, r=20, t=10, b=20),
+                showlegend=False, coloraxis_showscale=False)
             st.plotly_chart(fig, use_container_width=True)
         elif not dow_agg.empty:
             st.bar_chart(dow_agg.set_index("dow")[["count"]], height=220)
@@ -1239,7 +1700,6 @@ with tab_analytics:
     else:
         st.info("No wrinkle data in last 90 days.")
 
-    # ---- Top 10 worst parts ----
     st.markdown('<div class="section-header">TOP 10 WORST PARTS IN PIPELINE</div>',
                 unsafe_allow_html=True)
 
@@ -1252,21 +1712,15 @@ with tab_analytics:
             "summary", "issue_id", "order_number", "stage", "severity",
             "issue_count", "scrap_count", "wrinkle_count", "score_v",
         ]].rename(columns={
-            "summary": "Part",
-            "issue_id": "ME",
-            "order_number": "MFID",
-            "stage": "Stage",
-            "severity": "Sev",
-            "issue_count": "Iss",
-            "scrap_count": "Scr",
-            "wrinkle_count": "Wrk",
-            "score_v": "Score",
+            "summary": "Part", "issue_id": "ME", "order_number": "MFID",
+            "stage": "Stage", "severity": "Sev",
+            "issue_count": "Iss", "scrap_count": "Scr",
+            "wrinkle_count": "Wrk", "score_v": "Score",
         })
         st.dataframe(show, hide_index=True, use_container_width=True)
     else:
         st.success("No parts in pipeline have any quality history.")
 
-    # ---- Pipeline composition heatmap ----
     st.markdown('<div class="section-header">PIPELINE COMPOSITION · severity × stage</div>',
                 unsafe_allow_html=True)
 
@@ -1277,32 +1731,21 @@ with tab_analytics:
     pivot = pivot.reindex(index=sev_order, fill_value=0)
 
     if HAS_PLOTLY and not pivot.empty:
-        fig = px.imshow(
-            pivot.values,
-            x=pivot.columns.tolist(),
-            y=pivot.index.tolist(),
+        fig = px.imshow(pivot.values, x=pivot.columns.tolist(), y=pivot.index.tolist(),
             color_continuous_scale=[[0, "#f4f4f4"], [1, "#c0392b"]],
-            text_auto=True, aspect="auto",
-        )
-        fig.update_layout(
-            height=240, margin=dict(l=20, r=20, t=10, b=20),
-            coloraxis_showscale=False,
-            xaxis_title=None, yaxis_title=None,
-        )
+            text_auto=True, aspect="auto")
+        fig.update_layout(height=240, margin=dict(l=20, r=20, t=10, b=20),
+            coloraxis_showscale=False, xaxis_title=None, yaxis_title=None)
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.dataframe(pivot, use_container_width=True)
 
-    # ---- What Changed (delta view) ----
     st.markdown('<div class="section-header">WHAT CHANGED · since prior shift</div>',
                 unsafe_allow_html=True)
 
     prior = load_prior_snapshot(now_pt)
     if prior.empty:
-        st.info(
-            "No prior snapshot found yet. The first run kicks off the history — "
-            "by your next shift, this will show what changed since now."
-        )
+        st.info("No prior snapshot found yet. The first run kicks off the history.")
         st.caption(st.session_state.get("snapshot_msg", ""))
     else:
         prior_ts = pd.to_datetime(prior["snapshot_ts"]).max()
