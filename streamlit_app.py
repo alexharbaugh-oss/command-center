@@ -2144,10 +2144,8 @@ with tab_analytics:
             q_with_cat["category"] = q_with_cat["defect_code"].apply(categorize_defect)
             cat_agg = q_with_cat[q_with_cat["category"] != "Other"].groupby("category").agg(
                 total=("issue_id", "count"),
-                scraps=("disposition", lambda s: int((s == "Scrap
                 scraps=("disposition", lambda s: int((s == "Scrap").sum())),
             ).reset_index().sort_values("total", ascending=True).tail(10)
-
             if HAS_PLOTLY and not cat_agg.empty:
                 fig = go.Figure()
                 fig.add_trace(go.Bar(y=cat_agg["category"], x=cat_agg["total"],
