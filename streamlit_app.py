@@ -11,10 +11,6 @@ Required files in repo root:
 
 Required Streamlit secrets:
   DATABRICKS_HOST, DATABRICKS_HTTP_PATH, DATABRICKS_TOKEN
-
-Tables:
-  manufacturing.default.kqw_snapshots
-  manufacturing.default.kqw_watchlist
 """
 
 import io
@@ -43,6 +39,7 @@ st.set_page_config(
     page_icon="🛠️",
     layout="wide",
     initial_sidebar_state="expanded",
+    menu_items={},
 )
 
 LOOKBACK_DAYS = 180
@@ -51,7 +48,7 @@ WATCHLIST_TABLE = "manufacturing.default.kqw_watchlist"
 SNAPSHOT_MIN_GAP_MINUTES = 30
 MIN_DAYS_FOR_VERDICT = 14
 IMPROVEMENT_THRESHOLD = 0.25
-APP_VERSION = "v0.4 · brand"
+APP_VERSION = "v0.5"
 
 STATUS_TO_STAGE = {
     "Scheduled":         "Scheduled",
@@ -89,7 +86,7 @@ SEV_COLOR = {
 }
 
 # ============================================================
-# THEME (light/dark)
+# THEME
 # ============================================================
 
 if "theme" not in st.session_state:
@@ -98,7 +95,6 @@ if "theme" not in st.session_state:
 
 @st.cache_data
 def load_logo_b64():
-    """Load joby_logo.png from repo root, return base64 string or None."""
     for candidate in [Path(__file__).parent / "joby_logo.png", Path("joby_logo.png")]:
         try:
             if candidate.exists():
@@ -589,7 +585,7 @@ def fmt_delta(curr, prior, lower_is_better=True):
 
 
 # ============================================================
-# CSS — single source of truth, theme-aware via CSS variables
+# CSS
 # ============================================================
 
 BASE_CSS = """
@@ -597,8 +593,18 @@ BASE_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&display=swap');
 
+/* === HIDE STREAMLIT CHROME === */
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
+header[data-testid="stHeader"] { display: none; }
+[data-testid="stDecoration"] { display: none; }
+[data-testid="stToolbar"] { display: none; }
+.stDeployButton { display: none !important; }
+[data-testid="stStatusWidget"] { display: none; }
+[class*="viewerBadge"] { display: none !important; }
+.stApp > header { display: none; }
+
 :root {
-  /* === Joby brand palette === */
   --joby-off-black:    #0E1620;
   --joby-off-white:    #F5F4DF;
   --joby-gray:         #CDD0D1;
@@ -608,7 +614,6 @@ BASE_CSS = """
   --joby-dark-blue:    #1C3F99;
   --joby-dark-blue-ui: #083E6F;
 
-  /* === Light theme tokens (default) === */
   --bg-page:           #FAFAF6;
   --bg-card:           #FFFFFF;
   --bg-card-alt:       #F7F7F2;
@@ -637,7 +642,6 @@ BASE_CSS = """
   --section-bg:        var(--joby-dark-blue-ui);
   --section-text:      #FFFFFF;
 
-  /* Severity (foreground colors stay constant for muscle memory) */
   --sev-red:        #C0392B;
   --sev-red-bg:     #FDECEA;
   --sev-orange:     #D4730B;
@@ -654,24 +658,18 @@ BASE_CSS = """
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
-
   --grid-color: #F0EFE5;
 }
 
-/* === Base typography === */
 html, body, [class*="css"], [data-testid="stAppViewContainer"] {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   color: var(--text-primary);
 }
-[data-testid="stAppViewContainer"] {
-  background: var(--bg-page) !important;
-}
-[data-testid="stHeader"] { background: transparent !important; }
-[data-testid="stToolbar"] { background: transparent !important; }
+[data-testid="stAppViewContainer"] { background: var(--bg-page) !important; }
 
 .block-container {
-  padding-top: 0.75rem;
+  padding-top: 1.5rem;
   padding-bottom: 4rem;
   max-width: 1280px;
 }
@@ -680,10 +678,6 @@ h1, h2, h3, h4 {
   color: var(--text-primary);
   letter-spacing: -0.015em;
   font-weight: 700;
-}
-[data-testid="stMarkdownContainer"] h2,
-[data-testid="stMarkdownContainer"] h3 {
-  color: var(--accent-strong);
 }
 
 /* === Sidebar === */
@@ -729,7 +723,7 @@ h1, h2, h3, h4 {
 }
 .cmd-header .logo-mark img {
   width: 32px; height: auto;
-  filter: brightness(0) invert(1);  /* white logo on dark header */
+  filter: brightness(0) invert(1);
 }
 .cmd-header .logo-mark .fallback { font-size: 22px; }
 .cmd-header .titles { flex: 1; min-width: 0; position: relative; z-index: 1; }
@@ -777,9 +771,7 @@ h1, h2, h3, h4 {
 }
 
 /* === Metric cards === */
-.metric-row {
-  display: flex; gap: 10px; flex-wrap: wrap;
-}
+.metric-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .metric-box {
   flex: 1; min-width: 140px;
   background: var(--bg-card);
@@ -821,6 +813,47 @@ h1, h2, h3, h4 {
 .val-yellow { color: var(--sev-yellow); }
 .val-green  { color: var(--sev-green); }
 
+/* === Tab header (5S replacement for subheader+caption+write) === */
+.tab-header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin: 4px 0 14px 0; padding: 0 0 10px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap; gap: 8px;
+}
+.tab-header .th-count {
+  font-size: 17px; font-weight: 600;
+  color: var(--text-primary); letter-spacing: -0.01em;
+}
+.tab-header .th-count .num {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: var(--accent-strong);
+  font-variant-numeric: tabular-nums;
+}
+.tab-header .th-count .num-warn { color: var(--sev-red); }
+.tab-header .th-inst {
+  font-size: 12px; color: var(--text-muted);
+  font-weight: 500; letter-spacing: 0.01em;
+}
+
+/* === Empty state === */
+.empty-state {
+  background: var(--bg-card);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 28px 20px;
+  text-align: center;
+  margin: 8px 0 16px 0;
+}
+.empty-state .icon { font-size: 28px; margin-bottom: 8px; opacity: 0.65; }
+.empty-state .msg {
+  font-size: 13px; font-weight: 600;
+  color: var(--text-primary); margin-bottom: 4px;
+}
+.empty-state .sub {
+  font-size: 11.5px; color: var(--text-muted);
+}
+
 /* === Alert cards === */
 .alert-card {
   border: 1px solid var(--border-subtle);
@@ -832,26 +865,17 @@ h1, h2, h3, h4 {
   box-shadow: var(--shadow-sm);
   transition: box-shadow 180ms ease, transform 180ms ease;
 }
-.alert-card:hover {
-  box-shadow: var(--shadow-md);
-  transform: translateX(2px);
-}
+.alert-card:hover { box-shadow: var(--shadow-md); transform: translateX(2px); }
 .alert-card.red    { border-left-color: var(--sev-red);    background: var(--sev-red-bg); }
 .alert-card.orange { border-left-color: var(--sev-orange); background: var(--sev-orange-bg); }
 .alert-card.yellow { border-left-color: var(--sev-yellow); background: var(--sev-yellow-bg); }
-.alert-card .pn {
-  font-weight: 700; font-size: 14px; color: var(--text-primary);
-  letter-spacing: -0.01em;
-}
+.alert-card .pn { font-weight: 700; font-size: 14px; color: var(--text-primary); letter-spacing: -0.01em; }
 .alert-card .meta {
   font-size: 11.5px; color: var(--text-secondary); margin-top: 4px;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
 }
-.alert-card .meta b {
-  font-family: 'Inter', sans-serif;
-  color: var(--text-primary);
-}
+.alert-card .meta b { font-family: 'Inter', sans-serif; color: var(--text-primary); }
 .alert-card .badge {
   display: inline-block; font-size: 10px; font-weight: 700;
   padding: 2px 8px; border-radius: 3px;
@@ -970,9 +994,7 @@ h1, h2, h3, h4 {
 .watch-card.worsening { border-left-color: var(--sev-red); }
 .watch-card.too_soon  { border-left-color: var(--joby-blue); }
 .watch-card.no_data   { border-left-color: var(--joby-gray); background: var(--bg-card-alt); }
-.watch-card .meta {
-  font-size: 11.5px; color: var(--text-secondary); margin-bottom: 10px;
-}
+.watch-card .meta { font-size: 11.5px; color: var(--text-secondary); margin-bottom: 10px; }
 .watch-card .verdict {
   display: inline-block; font-size: 11px; font-weight: 700;
   padding: 3px 10px; border-radius: 3px; margin-right: 10px;
@@ -1006,9 +1028,7 @@ h1, h2, h3, h4 {
 }
 
 /* === Tabs === */
-[data-testid="stTabs"] {
-  border-bottom: 1px solid var(--border-subtle);
-}
+[data-testid="stTabs"] { border-bottom: 1px solid var(--border-subtle); }
 [data-testid="stTabs"] [role="tablist"] {
   gap: 4px; padding-bottom: 0; overflow-x: auto;
 }
@@ -1054,9 +1074,7 @@ h1, h2, h3, h4 {
   border-color: var(--accent-hover) !important;
   color: var(--text-inverse) !important;
 }
-.stButton button:disabled {
-  opacity: 0.5; cursor: not-allowed;
-}
+.stButton button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* === Inputs === */
 .stTextInput input, .stTextArea textarea, .stDateInput input {
@@ -1077,7 +1095,7 @@ h1, h2, h3, h4 {
   font-size: 13px !important;
 }
 
-/* === Multiselect / Selectbox FIX (was rendering with red default chips) === */
+/* === Multiselect / Selectbox FIX === */
 .stMultiSelect [data-baseweb="select"] > div,
 .stSelectbox [data-baseweb="select"] > div {
   background: var(--bg-card) !important;
@@ -1090,45 +1108,32 @@ h1, h2, h3, h4 {
   border-radius: 3px !important;
   font-weight: 500 !important;
 }
-[data-baseweb="tag"] span {
-  color: var(--text-inverse) !important;
-}
-[data-baseweb="tag"] svg {
-  fill: var(--text-inverse) !important;
-}
+[data-baseweb="tag"] span { color: var(--text-inverse) !important; }
+[data-baseweb="tag"] svg { fill: var(--text-inverse) !important; }
 [data-baseweb="popover"] [role="listbox"] {
   background: var(--bg-card) !important;
   border: 1px solid var(--border-default) !important;
 }
-[data-baseweb="popover"] [role="option"] {
-  color: var(--text-primary) !important;
-}
-[data-baseweb="popover"] [role="option"]:hover {
-  background: var(--accent-soft) !important;
-}
+[data-baseweb="popover"] [role="option"] { color: var(--text-primary) !important; }
+[data-baseweb="popover"] [role="option"]:hover { background: var(--accent-soft) !important; }
 
-/* === Radio === */
 .stRadio [role="radiogroup"] > label > div:first-child {
   background: var(--bg-card) !important;
   border-color: var(--border-default) !important;
 }
 
-/* === Captions === */
 [data-testid="stCaptionContainer"] {
   color: var(--text-muted) !important;
   font-size: 12px !important;
 }
 
-/* === Dividers === */
 hr { border-color: var(--border-subtle) !important; margin: 20px 0 !important; }
 
-/* === Alerts === */
 [data-testid="stAlert"] {
   border-radius: var(--radius-md) !important;
   border: 1px solid var(--border-subtle) !important;
 }
 
-/* === Expanders === */
 [data-testid="stExpander"] {
   border: 1px solid var(--border-subtle) !important;
   border-radius: var(--radius-md) !important;
@@ -1140,11 +1145,8 @@ hr { border-color: var(--border-subtle) !important; margin: 20px 0 !important; }
   font-weight: 600 !important;
   color: var(--text-primary) !important;
 }
-[data-testid="stExpander"] [data-testid="stMarkdownContainer"] {
-  color: var(--text-primary);
-}
+[data-testid="stExpander"] [data-testid="stMarkdownContainer"] { color: var(--text-primary); }
 
-/* === Dataframe === */
 [data-testid="stDataFrame"] {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -1171,7 +1173,7 @@ hr { border-color: var(--border-subtle) !important; margin: 20px 0 !important; }
   font-size: 11px; color: var(--text-muted);
   box-shadow: var(--shadow-sm);
 }
-.app-footer .left, .app-footer .right { display: flex; align-items: center; gap: 10px; }
+.app-footer .left, .app-footer .right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .app-footer .pill {
   font-family: 'JetBrains Mono', monospace;
   font-variant-numeric: tabular-nums;
@@ -1181,7 +1183,7 @@ hr { border-color: var(--border-subtle) !important; margin: 20px 0 !important; }
   font-size: 10px; color: var(--text-secondary);
 }
 
-/* === Mobile/tablet responsive === */
+/* === Mobile/tablet === */
 @media (max-width: 1024px) {
   .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
   .metric-box { min-width: 120px; padding: 10px 12px; }
@@ -1202,6 +1204,7 @@ hr { border-color: var(--border-subtle) !important; margin: 20px 0 !important; }
   .beforeafter { flex-direction: column; gap: 8px; }
   .beforeafter .ba-arrow { transform: rotate(90deg); align-self: flex-start; }
   .app-footer { flex-direction: column; gap: 6px; align-items: flex-start; }
+  .tab-header { flex-direction: column; align-items: flex-start; }
 }
 </style>
 """
@@ -1252,13 +1255,8 @@ DARK_OVERRIDE_CSS = """
 
   --grid-color: #232C3A;
 }
-[data-testid="stHeader"] { background: var(--bg-page) !important; }
 .alert-card .meta b { color: var(--text-primary); }
 [data-baseweb="popover"] [role="listbox"] { background: var(--bg-card) !important; }
-.stTextInput input, .stTextArea textarea, .stDateInput input {
-  background: var(--bg-card) !important;
-  color: var(--text-primary) !important;
-}
 </style>
 """
 
@@ -1273,12 +1271,9 @@ if st.session_state.theme == "dark":
 now_pt = datetime.now(timezone.utc) + timedelta(hours=-7)
 ts_str = now_pt.strftime("%a %b %-d, %Y · %-I:%M %p PT")
 
-# Header with real logo
 logo_b64 = load_logo_b64()
-if logo_b64:
-    logo_html = '<img src="data:image/png;base64,' + logo_b64 + '" alt="Joby"/>'
-else:
-    logo_html = '<span class="fallback">🛠️</span>'
+logo_html = ('<img src="data:image/png;base64,' + logo_b64 + '" alt="Joby"/>'
+             if logo_b64 else '<span class="fallback">🛠️</span>')
 
 st.markdown(
     '<div class="cmd-header">'
@@ -1292,37 +1287,47 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Sidebar
+# ============================================================
+# SIDEBAR — reorganized: actions first, info collapsed
+# ============================================================
 with st.sidebar:
     st.subheader("Controls")
 
     if st.button("🔄 Refresh data", use_container_width=True, type="primary"):
         st.cache_data.clear()
         st.rerun()
-    st.caption("Cached for 5 min. Hit refresh to re-pull from Databricks.")
 
-    # Theme toggle
-    theme_label = "🌙 Switch to dark mode" if st.session_state.theme == "light" else "☀️ Switch to light mode"
+    theme_label = "🌙 Dark mode" if st.session_state.theme == "light" else "☀️ Light mode"
     if st.button(theme_label, use_container_width=True):
         st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
         st.rerun()
 
+    st.caption("Cached for 5 min. Refresh re-pulls from Databricks.")
+
     st.divider()
-    st.caption("**Severity rules**")
-    st.caption("🔴 RED — 2+ scraps OR 3+ wrinkles")
-    st.caption("🟠 ORANGE — 1 scrap, 3+ issues, OR 2+ wrinkles")
-    st.caption("🟡 YELLOW — 1+ issue, no scrap")
-    st.caption("🟢 CLEAN — no quality history")
-    st.divider()
-    st.caption("Lookback: " + str(LOOKBACK_DAYS) + " days")
-    st.caption("Areas: 527 Lam, Kitting, Hand Trim, ME-Comp Fab")
-    st.caption("Snapshots: " + SNAPSHOT_TABLE)
-    st.caption("Watchlist: " + WATCHLIST_TABLE)
-    st.caption("Shift hand-off: 5:30 PM PT")
+
+    with st.expander("📖 Severity rules", expanded=False):
+        st.caption("🔴 **RED** — 2+ scraps OR 3+ wrinkles")
+        st.caption("🟠 **ORANGE** — 1 scrap, 3+ issues, OR 2+ wrinkles")
+        st.caption("🟡 **YELLOW** — 1+ issue, no scrap")
+        st.caption("🟢 **CLEAN** — no quality history")
+
+    with st.expander("ℹ️ About this app", expanded=False):
+        st.caption("**Lookback:** " + str(LOOKBACK_DAYS) + " days")
+        st.caption("**Areas:** 527 Lam, Kitting, Hand Trim, ME-Comp Fab")
+        st.caption("**Snapshots table:**")
+        st.code(SNAPSHOT_TABLE, language=None)
+        st.caption("**Watchlist table:**")
+        st.code(WATCHLIST_TABLE, language=None)
+        st.caption("**Shift hand-off:** 5:30 PM PT")
+        st.caption("**Version:** " + APP_VERSION)
+
     if not HAS_PLOTLY:
         st.warning("Plotly not installed — using fallback charts.")
 
-# Load data
+# ============================================================
+# DATA LOAD
+# ============================================================
 try:
     with st.spinner("Pulling pipeline + 6 months of quality history…"):
         pipeline_df = load_pipeline()
@@ -1352,22 +1357,21 @@ yellow = int(sev_counts.get("YELLOW", 0))
 clean  = int(sev_counts.get("CLEAN", 0))
 
 
+# ============================================================
+# UI HELPERS
+# ============================================================
+
 def render_kpi_card(label, value, delta_text=None, delta_color=None, sub=None, val_color=None):
-    val_style = ""
-    if val_color:
-        val_style = ' style="color:' + str(val_color) + ';"'
-    delta_html = ""
+    val_style = ' style="color:' + str(val_color) + ';"' if val_color else ""
+    delta_html = ''
     if delta_text:
         delta_html = '<div class="delta" style="color:' + str(delta_color or "var(--text-muted)") + ';">' + str(delta_text) + '</div>'
-    sub_html = ""
-    if sub:
-        sub_html = '<div class="sub">' + str(sub) + '</div>'
+    sub_html = '<div class="sub">' + str(sub) + '</div>' if sub else ''
     return (
         '<div class="metric-box">'
         + '<div class="label">' + str(label) + '</div>'
         + '<div class="val"' + val_style + '>' + str(value) + '</div>'
-        + delta_html + sub_html
-        + '</div>'
+        + delta_html + sub_html + '</div>'
     )
 
 
@@ -1381,6 +1385,28 @@ def kpi_row_html(cards):
         ))
     parts.append('</div>')
     return "".join(parts)
+
+
+def tab_header(count_html, instruction):
+    """5S replacement for subheader+caption+write triplet."""
+    st.markdown(
+        '<div class="tab-header">'
+        + '<div class="th-count">' + count_html + '</div>'
+        + '<div class="th-inst">' + instruction + '</div>'
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def empty_state(icon, msg, sub=None):
+    sub_html = '<div class="sub">' + sub + '</div>' if sub else ''
+    st.markdown(
+        '<div class="empty-state">'
+        + '<div class="icon">' + icon + '</div>'
+        + '<div class="msg">' + msg + '</div>'
+        + sub_html + '</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # Sticky top KPI strip
@@ -1397,10 +1423,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-# ============================================================
-# RENDERERS
-# ============================================================
 
 def render_alert(row, show_history=True, max_history=5):
     sev = row["severity"]
@@ -1443,9 +1465,7 @@ def render_alert(row, show_history=True, max_history=5):
                 + '</div>'
             )
 
-    defect_line = ""
-    if defect_str:
-        defect_line = "<br/>Defects: " + defect_str
+    defect_line = "<br/>Defects: " + defect_str if defect_str else ""
 
     html = (
         '<div class="alert-card ' + cls + '">'
@@ -1453,8 +1473,7 @@ def render_alert(row, show_history=True, max_history=5):
         + '<span class="pn">' + summary + '</span>'
         + '<div class="meta">'
         + issue_id + " · MFID-" + str(mfid) + " · " + pn + " · <b>" + stage + "</b> · " + counts
-        + defect_line
-        + '</div>'
+        + defect_line + '</div>'
         + history_html
         + '</div>'
     )
@@ -1485,21 +1504,32 @@ def render_delta_line(row, suffix=""):
     )
 
 
-# Plotly theme — adapts to current theme
+# ============================================================
+# PLOTLY THEME — transparent, larger fonts, clean
+# ============================================================
 if st.session_state.theme == "dark":
     PLOTLY_LAYOUT = dict(
-        font=dict(family="Inter, sans-serif", color="#F5F4DF"),
-        paper_bgcolor="#131C26", plot_bgcolor="#131C26",
-        xaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E"),
-        yaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E"),
+        font=dict(family="Inter, sans-serif", size=12, color="#F5F4DF"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E",
+                   tickfont=dict(size=11)),
+        yaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E",
+                   tickfont=dict(size=11)),
+        legend=dict(font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
     )
     PLOTLY_NEUTRAL = "#485668"
     PLOTLY_ACCENT = "#4DA3FF"
 else:
     PLOTLY_LAYOUT = dict(
-        font=dict(family="Inter, sans-serif", color="#0E1620"),
-        paper_bgcolor="white", plot_bgcolor="white",
-        xaxis=dict(gridcolor="#F0EFE5"), yaxis=dict(gridcolor="#F0EFE5"),
+        font=dict(family="Inter, sans-serif", size=12, color="#0E1620"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(gridcolor="#F0EFE5", linecolor="#D4D6D8", tickcolor="#D4D6D8",
+                   tickfont=dict(size=11)),
+        yaxis=dict(gridcolor="#F0EFE5", linecolor="#D4D6D8", tickcolor="#D4D6D8",
+                   tickfont=dict(size=11)),
+        legend=dict(font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
     )
     PLOTLY_NEUTRAL = "#CDD0D1"
     PLOTLY_ACCENT = "#007AE5"
@@ -1519,50 +1549,71 @@ tab_floor, tab_next, tab_up, tab_search, tab_improve, tab_export, tab_analytics 
     "📊 Analytics",
 ])
 
+# ---------- IN LAYUP ----------
 with tab_floor:
-    st.subheader("In Layup")
-    st.caption("Parts in **Layup** — what to check during your walk")
     on_floor = filter_and_sort(scored, ["Layup"])
     flagged = on_floor[on_floor["severity"] != "CLEAN"]
-    st.write("**" + str(len(on_floor)) + "** parts in layup — **" + str(len(flagged)) + "** need attention")
+
+    n_flag = len(flagged)
+    flag_class = "num num-warn" if n_flag > 0 else "num"
+    tab_header(
+        '<span class="num">' + str(len(on_floor)) + '</span> in layup · '
+        + '<span class="' + flag_class + '">' + str(n_flag) + '</span> need attention',
+        'Walk-through priorities',
+    )
     if flagged.empty:
-        st.success("✅ No flagged parts in layup right now.")
+        empty_state("✅", "All clear in layup", "No flagged parts on the table right now.")
     else:
         for _, row in flagged.iterrows():
             render_alert(row)
 
 
+# ---------- READY TO LAYUP ----------
 with tab_next:
-    st.subheader("Ready to Layup")
-    st.caption("Parts about to hit the tool — plan before they start")
     next_up = filter_and_sort(scored, ["Ready to Layup"])
     flagged = next_up[next_up["severity"] != "CLEAN"]
-    st.write("**" + str(len(next_up)) + "** parts queued — **" + str(len(flagged)) + "** need a plan")
+
+    n_flag = len(flagged)
+    flag_class = "num num-warn" if n_flag > 0 else "num"
+    tab_header(
+        '<span class="num">' + str(len(next_up)) + '</span> queued · '
+        + '<span class="' + flag_class + '">' + str(n_flag) + '</span> need a plan',
+        'Get ahead before it hits the tool',
+    )
     if flagged.empty:
-        st.success("✅ No flagged parts ready to layup.")
+        empty_state("✅", "Nothing flagged in queue", "All Ready-to-Layup parts are clean.")
     else:
         for _, row in flagged.iterrows():
             render_alert(row)
 
 
+# ---------- UPSTREAM ----------
 with tab_up:
-    st.subheader("Upstream")
-    st.caption("Material Cutting + Scheduled — flag before they arrive")
     upstream = filter_and_sort(scored, ["Material Cutting", "Scheduled"])
     flagged = upstream[upstream["severity"].isin(["RED", "ORANGE"])]
-    st.write("**" + str(len(upstream)) + "** parts upstream — showing **" + str(len(flagged)) + "** RED/ORANGE")
+
+    tab_header(
+        '<span class="num">' + str(len(upstream)) + '</span> upstream · '
+        + '<span class="num">' + str(len(flagged)) + '</span> RED/ORANGE',
+        'Material cutting + scheduled — flag before they arrive',
+    )
     if flagged.empty:
-        st.info("Nothing critical upstream right now.")
+        empty_state("✅", "Nothing critical upstream", "No RED or ORANGE parts in cutting or scheduled.")
     else:
         for _, row in flagged.iterrows():
             render_alert(row, show_history=False)
 
 
+# ---------- SEARCH ----------
 with tab_search:
-    st.subheader("Search any part")
+    tab_header(
+        '<span class="num">🔍</span> Search any part',
+        'Part name · part number · ME-ID · MFID · defect',
+    )
     q = st.text_input(
-        "Part name, part number, ME-ID, MFID, or defect — partial match",
-        placeholder="e.g., wing skin   |   213565   |   ME-45578   |   MFID-0014992   |   wrinkle",
+        "Type to search",
+        placeholder="wing skin   |   213565   |   ME-45578   |   wrinkle",
+        label_visibility="collapsed",
     )
     if q:
         ql = q.lower().strip()
@@ -1573,7 +1624,9 @@ with tab_search:
             | scored["order_number"].fillna("").str.lower().str.contains(ql, regex=False)
         )
         hits = scored.loc[mask].sort_values(["sev_rank", "stage_rank"])
-        st.write("**" + str(len(hits)) + "** pipeline match(es)")
+        st.markdown('<div style="font-size:13px;color:var(--text-muted);margin-bottom:8px;">'
+                    + '<b>' + str(len(hits)) + '</b> pipeline match(es)</div>',
+                    unsafe_allow_html=True)
         for _, row in hits.head(40).iterrows():
             render_alert(row)
         if not quality_df.empty:
@@ -1588,7 +1641,9 @@ with tab_search:
             qhits = qhits[~qhits["pn_norm"].isin(in_pipeline)]
             if not qhits.empty:
                 st.divider()
-                st.write("**" + str(len(qhits)) + "** quality-history match(es) (not in pipeline)")
+                st.markdown('<div style="font-size:13px;color:var(--text-muted);margin-bottom:8px;">'
+                            + '<b>' + str(len(qhits)) + '</b> quality-history match(es) (not in pipeline)</div>',
+                            unsafe_allow_html=True)
                 show = qhits[[
                     "created_str", "part_description", "part_number",
                     "clean_defect", "disposition_clean", "originating_area"
@@ -1599,17 +1654,20 @@ with tab_search:
                 })
                 st.dataframe(show, hide_index=True, use_container_width=True)
     else:
-        st.info("Start typing to search.")
+        empty_state("🔍", "Start typing to search", "Search across pipeline + 6 months of quality history.")
 
 
 # ---------- IMPROVEMENT TRACKER ----------
 with tab_improve:
-    st.subheader("🎯 Improvement Tracker")
-    st.caption("Watch risk parts. Log corrective actions. Verify if they actually worked.")
-
     watchlist = load_watchlist()
     active_wl = watchlist[watchlist["status"] == "active"] if not watchlist.empty else pd.DataFrame()
     closed_wl = watchlist[watchlist["status"] != "active"] if not watchlist.empty else pd.DataFrame()
+
+    tab_header(
+        '<span class="num">' + str(len(active_wl)) + '</span> active · '
+        + '<span class="num">' + str(len(closed_wl)) + '</span> closed',
+        'Watch risk parts. Log corrective actions. Verify they worked.',
+    )
 
     search_universe = []
     seen_pns = set()
@@ -1638,7 +1696,7 @@ with tab_improve:
     st.markdown('<div class="section-header">ADD A PART TO WATCH</div>', unsafe_allow_html=True)
     add_q = st.text_input(
         "Search by part name or part number to add",
-        placeholder="e.g. forward floor bracket   |   216159-001",
+        placeholder="forward floor bracket   |   216159-001",
         key="wl_search",
     )
     if add_q:
@@ -1648,7 +1706,7 @@ with tab_improve:
         if matches:
             st.caption("Matches — click to add")
             for u in matches:
-                col_a, col_b, col_c = st.columns([4, 1.5, 1])
+                col_a, _, col_c = st.columns([4, 1.5, 1])
                 with col_a:
                     on_list = (not active_wl.empty) and (u["pn_norm"] in set(active_wl["pn_norm"]))
                     pipe_tag = " 🏭" if u["in_pipeline"] else ""
@@ -1664,13 +1722,11 @@ with tab_improve:
                         + '</div>',
                         unsafe_allow_html=True,
                     )
-                with col_b:
-                    pass
                 with col_c:
                     if st.button("➕ Watch", key="add_" + u["pn_norm"], disabled=on_list, use_container_width=True):
                         try:
                             msg = add_to_watchlist(u["pn_norm"], u["pn_raw"], u["summary"])
-                            st.cache_data.clear(); st.success(msg + " — refreshing…"); st.rerun()
+                            st.cache_data.clear(); st.success(msg); st.rerun()
                         except Exception as e:
                             st.error("Add failed: " + str(e))
         else:
@@ -1680,7 +1736,8 @@ with tab_improve:
                 unsafe_allow_html=True)
 
     if active_wl.empty:
-        st.info("Nothing on the watchlist yet. Add a part above to start tracking.")
+        empty_state("🎯", "Watchlist is empty",
+                    "Add a part above to start tracking improvement.")
     else:
         verdict_label = {"improving": "✅ IMPROVING", "flat": "⚠️ FLAT",
                          "worsening": "🔴 WORSENING", "too_soon": "⏳ TOO SOON",
@@ -1730,8 +1787,7 @@ with tab_improve:
                 + '<div class="ba-label">AFTER · ' + str(comp["after_window"]) + ' days</div>'
                 + '<div class="ba-vals">' + str(after["issues"]) + ' issues · '
                 + str(after["scraps"]) + ' scrap · ' + str(after["wrinkles"]) + ' wrinkle</div>'
-                + '</div>'
-                + '</div>'
+                + '</div></div>'
             )
 
             if in_pipeline:
@@ -1763,7 +1819,7 @@ with tab_improve:
                         "What was done",
                         value=str(w.get("intervention_note") or ""),
                         key="intvnote_" + pn,
-                        placeholder="e.g. MWI rev 4/12, retrained operators",
+                        placeholder="MWI rev 4/12, retrained operators",
                     )
                 with col3:
                     st.write("")
@@ -1824,14 +1880,12 @@ with tab_improve:
                             fig.add_vline(x=pd.Timestamp(intv_dt),
                                 line_dash="dash", line_color=PLOTLY_ACCENT,
                                 annotation_text="Intervention", annotation_position="top")
-                        fig.update_layout(barmode="overlay", height=200,
+                        fig.update_layout(barmode="overlay", height=220,
                             margin=dict(l=20, r=20, t=20, b=20),
-                            legend=dict(orientation="h", y=1.05, x=0),
+                            legend=dict(orientation="h", y=1.08, x=0),
                             xaxis_title=None, yaxis_title=None,
                             **PLOTLY_LAYOUT)
                         st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.bar_chart(wk.set_index("week")[["issues", "scraps"]], height=180)
                 else:
                     st.caption("No quality history found for this part in the last 6 months.")
 
@@ -1855,36 +1909,44 @@ with tab_improve:
                 )
 
 
+# ---------- EXPORT ----------
 with tab_export:
-    st.subheader("Export")
-    st.caption("Download the current snapshot as CSV or PDF")
-    flat_cols = [
-        "issue_id", "order_number", "part_number", "summary", "stage", "severity",
-        "issue_count", "scrap_count", "rework_count", "pending_count", "wrinkle_count",
-    ]
-    csv_buf = scored[flat_cols].to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "⬇️ Download CSV", data=csv_buf,
-        file_name="quality_watch_" + now_pt.strftime("%Y-%m-%d_%H%M") + ".csv",
-        mime="text/csv", use_container_width=True,
+    tab_header(
+        '<span class="num">📄</span> Export current snapshot',
+        'CSV for analysis · PDF for the floor',
     )
-    if st.button("📄 Generate PDF report", use_container_width=True, type="primary"):
-        with st.spinner("Building PDF…"):
-            from pdf_export import build_pdf
-            pdf_bytes = build_pdf(scored, now_pt)
-        shift = _shift_for(now_pt)
-        fname = "Kanban_Quality_Watch_" + now_pt.strftime("%-m-%-d-%y") + "_" + shift + ".pdf"
+
+    col1, col2 = st.columns(2)
+    with col1:
+        flat_cols = [
+            "issue_id", "order_number", "part_number", "summary", "stage", "severity",
+            "issue_count", "scrap_count", "rework_count", "pending_count", "wrinkle_count",
+        ]
+        csv_buf = scored[flat_cols].to_csv(index=False).encode("utf-8")
         st.download_button(
-            "⬇️ Download PDF", data=pdf_bytes,
-            file_name=fname, mime="application/pdf", use_container_width=True,
+            "⬇️ Download CSV", data=csv_buf,
+            file_name="quality_watch_" + now_pt.strftime("%Y-%m-%d_%H%M") + ".csv",
+            mime="text/csv", use_container_width=True,
         )
-        st.success("PDF ready: **" + fname + "**")
+    with col2:
+        if st.button("📄 Generate PDF", use_container_width=True, type="primary"):
+            with st.spinner("Building PDF…"):
+                from pdf_export import build_pdf
+                pdf_bytes = build_pdf(scored, now_pt)
+            shift = _shift_for(now_pt)
+            fname = "Kanban_Quality_Watch_" + now_pt.strftime("%-m-%-d-%y") + "_" + shift + ".pdf"
+            st.download_button(
+                "⬇️ Download " + fname, data=pdf_bytes,
+                file_name=fname, mime="application/pdf", use_container_width=True,
+            )
 
 
 # ---------- ANALYTICS ----------
 with tab_analytics:
-    st.subheader("📊 Quality & Productivity Analytics")
-    st.caption("Trend, breakdowns, KPIs, and shift-over-shift changes — all filterable.")
+    tab_header(
+        '<span class="num">📊</span> Quality & Productivity Analytics',
+        'Trends · KPIs · shift-over-shift change',
+    )
 
     fcol1, fcol2, fcol3 = st.columns([2, 2, 2])
     with fcol1:
@@ -2020,9 +2082,9 @@ with tab_analytics:
                 unsafe_allow_html=True,
             )
         else:
-            st.info("Not enough wrinkle history yet for ARTS goal tracking (need 8+ weeks).")
+            empty_state("📈", "Not enough history yet", "Need 8+ weeks of wrinkle data for ARTS goal tracking.")
     else:
-        st.info("No wrinkle data in selected window.")
+        empty_state("✅", "No wrinkles in selected window")
 
     st.markdown('<div class="section-header">WEEKLY ISSUE & SCRAP TREND · last 12 weeks</div>',
                 unsafe_allow_html=True)
@@ -2038,7 +2100,7 @@ with tab_analytics:
 
         if HAS_PLOTLY and not weekly_agg.empty:
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["issues"], name="Total issues",
+            fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["issues"], name="Issues",
                 marker_color=PLOTLY_NEUTRAL,
                 hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>"))
             fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["scraps"], name="Scraps",
@@ -2046,16 +2108,15 @@ with tab_analytics:
                 hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>"))
             fig.add_trace(go.Scatter(x=weekly_agg["week"], y=weekly_agg["wrinkles"], name="Wrinkles",
                 mode="lines+markers", line=dict(color="#D4730B", width=3),
+                marker=dict(size=8),
                 hovertemplate="%{x|%b %d}<br>%{y} wrinkles<extra></extra>"))
             fig.update_layout(barmode="overlay", height=320,
-                margin=dict(l=20, r=20, t=10, b=20),
-                legend=dict(orientation="h", y=1.05, x=0),
+                margin=dict(l=10, r=10, t=10, b=20),
+                legend=dict(orientation="h", y=1.08, x=0),
                 hovermode="x unified",
-                xaxis_title=None, yaxis_title="Count",
+                xaxis_title=None, yaxis_title=None,
                 **PLOTLY_LAYOUT)
-            st.plotly_chart(fig, use_container_width=True)
-        elif not weekly_agg.empty:
-            st.bar_chart(weekly_agg.set_index("week")[["issues", "scraps", "wrinkles"]], height=260)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown('<div class="section-header">DAILY ACTIVITY · last 30 days</div>', unsafe_allow_html=True)
 
@@ -2076,22 +2137,22 @@ with tab_analytics:
                 marker_color="#C0392B",
                 hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>"))
             fig.update_layout(barmode="group", height=260,
-                margin=dict(l=20, r=20, t=10, b=20),
-                legend=dict(orientation="h", y=1.05, x=0),
+                margin=dict(l=10, r=10, t=10, b=20),
+                legend=dict(orientation="h", y=1.08, x=0),
                 xaxis_title=None, yaxis_title=None,
                 **PLOTLY_LAYOUT)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.bar_chart(daily.set_index("created_date")[["issues", "scraps"]], height=240)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
         if not daily.empty:
             spike = daily.loc[daily["issues"].idxmax()]
             st.caption(
-                "Worst day in window: **" + str(spike["created_date"])
-                + "** with **" + str(int(spike["issues"])) + " issues** ("
+                "Worst day: **" + str(spike["created_date"])
+                + "** — **" + str(int(spike["issues"])) + "** issues, "
                 + str(int(spike["scraps"])) + " scraps, "
-                + str(int(spike["wrinkles"])) + " wrinkles)"
+                + str(int(spike["wrinkles"])) + " wrinkles"
             )
+    else:
+        empty_state("📅", "No activity in last 30 days")
 
     col_l, col_r = st.columns(2)
 
@@ -2114,15 +2175,13 @@ with tab_analytics:
                     orientation="h", name="Scraps", marker_color="#C0392B",
                     hovertemplate="%{y}<br>%{x} scraps<extra></extra>"))
                 fig.update_layout(barmode="overlay", height=300,
-                    margin=dict(l=20, r=20, t=10, b=20),
-                    legend=dict(orientation="h", y=1.05, x=0),
+                    margin=dict(l=10, r=10, t=10, b=20),
+                    legend=dict(orientation="h", y=1.08, x=0),
                     xaxis_title=None, yaxis_title=None,
                     **PLOTLY_LAYOUT)
-                st.plotly_chart(fig, use_container_width=True)
-            elif not cat_agg.empty:
-                st.bar_chart(cat_agg.set_index("category")[["total", "scraps"]], height=300)
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         else:
-            st.info("No data in selected window.")
+            empty_state("📊", "No data in window")
 
     with col_r:
         st.markdown('<div class="section-header">DETECTION POINTS</div>', unsafe_allow_html=True)
@@ -2143,15 +2202,13 @@ with tab_analytics:
                     orientation="h", name="Scraps", marker_color="#C0392B",
                     hovertemplate="%{y}<br>%{x} scraps<extra></extra>"))
                 fig.update_layout(barmode="overlay", height=300,
-                    margin=dict(l=20, r=20, t=10, b=20),
-                    legend=dict(orientation="h", y=1.05, x=0),
+                    margin=dict(l=10, r=10, t=10, b=20),
+                    legend=dict(orientation="h", y=1.08, x=0),
                     xaxis_title=None, yaxis_title=None,
                     **PLOTLY_LAYOUT)
-                st.plotly_chart(fig, use_container_width=True)
-            elif not det.empty:
-                st.bar_chart(det.set_index("area_short")[["total", "scraps"]], height=300)
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         else:
-            st.info("No data in selected window.")
+            empty_state("📊", "No data in window")
 
     st.markdown('<div class="section-header">WRINKLE DAY-OF-WEEK PATTERN · last 90 days</div>',
                 unsafe_allow_html=True)
@@ -2164,11 +2221,9 @@ with tab_analytics:
             fig = px.bar(dow_agg, x="dow", y="count",
                 color="count", color_continuous_scale="Reds",
                 labels={"dow": "Day", "count": "Wrinkles"})
-            fig.update_layout(height=240, margin=dict(l=20, r=20, t=10, b=20),
+            fig.update_layout(height=240, margin=dict(l=10, r=10, t=10, b=20),
                 showlegend=False, coloraxis_showscale=False, **PLOTLY_LAYOUT)
-            st.plotly_chart(fig, use_container_width=True)
-        elif not dow_agg.empty:
-            st.bar_chart(dow_agg.set_index("dow")[["count"]], height=220)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
         peak_idx = dow_agg["count"].idxmax()
         peak_day = dow_agg.loc[peak_idx, "dow"]
@@ -2178,12 +2233,12 @@ with tab_analytics:
         total = wkdays + wknds
         wkday_pct = int(round(100 * wkdays / max(1, total)))
         st.caption(
-            "Peak day: **" + peak_day + "** (" + str(peak_count) + " wrinkles)  ·  "
-            + "Weekday share: **" + str(wkday_pct) + "%**  ·  "
-            + "Total: **" + str(total) + "** wrinkles, 90 days"
+            "Peak day: **" + peak_day + "** (" + str(peak_count) + ") · "
+            + "Weekday share: **" + str(wkday_pct) + "%** · "
+            + "Total: **" + str(total) + "** wrinkles in 90 days"
         )
     else:
-        st.info("No wrinkle data in last 90 days.")
+        empty_state("📅", "No wrinkles in last 90 days")
 
     st.markdown('<div class="section-header">TOP 10 WORST PARTS IN PIPELINE</div>',
                 unsafe_allow_html=True)
@@ -2204,7 +2259,7 @@ with tab_analytics:
         })
         st.dataframe(show, hide_index=True, use_container_width=True)
     else:
-        st.success("No parts in pipeline have any quality history.")
+        empty_state("✅", "No flagged parts in pipeline")
 
     st.markdown('<div class="section-header">PIPELINE COMPOSITION · severity × stage</div>',
                 unsafe_allow_html=True)
@@ -2220,18 +2275,16 @@ with tab_analytics:
         fig = px.imshow(pivot.values, x=pivot.columns.tolist(), y=pivot.index.tolist(),
             color_continuous_scale=[[0, bg_for_zero], [1, "#C0392B"]],
             text_auto=True, aspect="auto")
-        fig.update_layout(height=240, margin=dict(l=20, r=20, t=10, b=20),
+        fig.update_layout(height=240, margin=dict(l=10, r=10, t=10, b=20),
             coloraxis_showscale=False, xaxis_title=None, yaxis_title=None,
             **PLOTLY_LAYOUT)
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.dataframe(pivot, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown('<div class="section-header">WHAT CHANGED · since prior shift</div>', unsafe_allow_html=True)
 
     prior = load_prior_snapshot(now_pt)
     if prior.empty:
-        st.info("No prior snapshot found yet. The first run kicks off the history.")
+        empty_state("🆕", "First run", "Snapshots accumulate here. Comparison appears after the second shift.")
         st.caption(st.session_state.get("snapshot_msg", ""))
     else:
         prior_ts = pd.to_datetime(prior["snapshot_ts"]).max()
@@ -2266,7 +2319,7 @@ with tab_analytics:
         )
 
         if total_changes == 0:
-            st.success("No changes since the prior shift.")
+            empty_state("✅", "No changes since prior shift")
 
         delta_groups = [
             ("new_scrap",          "warn", "🔴 New scrap events"),
