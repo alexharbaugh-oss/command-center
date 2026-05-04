@@ -593,14 +593,7 @@ BASE_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&display=swap');
 
-/* === HIDE STREAMLIT CHROME (conservative — keep header intact) === */
-#MainMenu { visibility: hidden; }
-footer { visibility: hidden; }
-.stDeployButton { display: none !important; }
-[data-testid="stStatusWidget"] { display: none !important; }
-[data-testid="stDecoration"] { display: none !important; }
-[class*="viewerBadge"] { display: none !important; }
-[data-testid="stHeader"] { background: transparent !important; }
+/* Streamlit chrome left intact — sidebar control depends on it */
 }
 header[data-testid="stHeader"] [data-testid="stToolbar"] { display: none !important; }
 header[data-testid="stHeader"] [data-testid="stDecoration"] { display: none !important; }
