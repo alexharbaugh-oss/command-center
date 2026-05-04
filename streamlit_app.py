@@ -1104,10 +1104,15 @@ h1, h2, h3, h4 {
   box-shadow: 0 0 0 2px rgba(0, 122, 229, 0.18) !important;
 }
 .stTextInput label, .stTextArea label, .stDateInput label,
-.stMultiSelect label, .stSelectbox label, .stRadio label {
+.stMultiSelect label, .stSelectbox label, .stRadio label,
+[data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p,
+.stRadio [role="radiogroup"] label, .stRadio [role="radiogroup"] label p {
   color: var(--text-primary) !important;
   font-weight: 600 !important;
   font-size: 13px !important;
+}
+.stRadio [role="radiogroup"] label > div > p {
+  color: var(--text-primary) !important;
 }
 
 /* === Multiselect / Selectbox FIX === */
