@@ -47,7 +47,7 @@ WATCHLIST_TABLE = "manufacturing.default.kqw_watchlist"
 SNAPSHOT_MIN_GAP_MINUTES = 30
 MIN_DAYS_FOR_VERDICT = 14
 IMPROVEMENT_THRESHOLD = 0.25
-APP_VERSION = "v0.7"
+APP_VERSION = "v0.8"
 
 STATUS_TO_STAGE = {
     "Scheduled":         "Scheduled",
@@ -596,7 +596,12 @@ BASE_CSS = """
 footer { visibility: hidden; }
 .stDeployButton, .stAppDeployButton { display: none !important; }
 
-/* No sidebar — hide it entirely along with the reopen control */
+/* Kill the black bar at top of page */
+[data-testid="stHeader"] {
+  background: transparent !important;
+}
+
+/* Hide sidebar entirely along with reopen control */
 [data-testid="stSidebar"] { display: none !important; }
 [data-testid="collapsedControl"] { display: none !important; }
 section[data-testid="stSidebarUserContent"] { display: none !important; }
@@ -677,10 +682,6 @@ h1, h2, h3, h4 {
 }
 
 /* === Top utility bar (just dark mode toggle, right-aligned) === */
-.st-key-theme_toggle {
-  display: flex;
-  justify-content: flex-end;
-}
 .st-key-theme_toggle button {
   background: var(--bg-card) !important;
   border: 1px solid var(--border-default) !important;
@@ -699,12 +700,8 @@ h1, h2, h3, h4 {
   color: var(--accent) !important;
 }
 
-/* === Header card built from columns === */
-/* Mark the header row container so we can paint the gradient on the parent */
-[data-testid="stElementContainer"]:has(#header-row-marker) {
-  margin-bottom: 0 !important;
-}
-[data-testid="stElementContainer"]:has(#header-row-marker) + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] {
+/* === Header card (uses st.container key="header_card") === */
+.st-key-header_card {
   background: linear-gradient(135deg, var(--header-bg-start) 0%, var(--header-bg-end) 100%);
   border-radius: var(--radius-md);
   padding: 18px 24px;
@@ -712,23 +709,30 @@ h1, h2, h3, h4 {
   box-shadow: var(--shadow-md);
   position: relative;
   overflow: hidden;
-  align-items: center;
-  gap: 12px !important;
 }
-[data-testid="stElementContainer"]:has(#header-row-marker) + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"]::before {
+.st-key-header_card::before {
   content: ""; position: absolute; inset: 0;
   background: radial-gradient(ellipse at top right, rgba(124, 195, 255, 0.12), transparent 60%);
   pointer-events: none;
   border-radius: var(--radius-md);
 }
+.st-key-header_card [data-testid="stHorizontalBlock"] {
+  align-items: center;
+  gap: 12px !important;
+  position: relative;
+  z-index: 1;
+}
+.st-key-header_card [data-testid="stVerticalBlock"] {
+  gap: 0.5rem !important;
+}
+
 .hdr-left {
   display: flex; align-items: center; gap: 14px;
-  position: relative; z-index: 1;
 }
 .hdr-left .logo-mark {
   width: 46px; height: 46px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: var(--radius-sm);
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
@@ -750,13 +754,12 @@ h1, h2, h3, h4 {
 }
 
 .hdr-right {
-  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
-  position: relative; z-index: 1;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
 }
 .hdr-right .live-pill {
   display: inline-flex; align-items: center; gap: 6px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   padding: 5px 12px; border-radius: 12px;
   font-size: 11px; font-weight: 600;
   color: var(--header-sub);
@@ -775,27 +778,31 @@ h1, h2, h3, h4 {
   100% { box-shadow: 0 0 0 0 rgba(33, 224, 122, 0); }
 }
 
-/* Refresh button INSIDE the header — light-on-dark styling */
-.st-key-refresh_data {
-  position: relative; z-index: 1;
-}
+/* Refresh button — RED, prominent, lives inside the header card */
 .st-key-refresh_data button {
-  background: rgba(255, 255, 255, 0.12) !important;
-  border: 1px solid rgba(255, 255, 255, 0.28) !important;
+  background: var(--sev-red) !important;
+  border: 1px solid var(--sev-red) !important;
   color: #FFFFFF !important;
-  font-size: 12px !important;
-  font-weight: 600 !important;
-  padding: 6px 14px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  padding: 8px 18px !important;
   border-radius: var(--radius-sm) !important;
   min-height: 0 !important;
   height: auto !important;
   transition: all 150ms ease !important;
-  width: 100%;
+  width: 100% !important;
+  box-shadow: 0 2px 6px rgba(192, 57, 43, 0.35) !important;
+  letter-spacing: 0.01em !important;
 }
 .st-key-refresh_data button:hover {
-  background: rgba(255, 255, 255, 0.22) !important;
-  border-color: rgba(255, 255, 255, 0.5) !important;
+  background: #A93226 !important;
+  border-color: #A93226 !important;
   color: #FFFFFF !important;
+  box-shadow: 0 4px 10px rgba(192, 57, 43, 0.45) !important;
+  transform: translateY(-1px);
+}
+.st-key-refresh_data button:active {
+  transform: translateY(0);
 }
 
 /* === Sticky KPI strip === */
@@ -1077,7 +1084,7 @@ h1, h2, h3, h4 {
   background: transparent !important;
 }
 
-/* Default button styling (does not override .st-key-* specific overrides) */
+/* Default button styling (does NOT override .st-key-* specific rules above) */
 .stButton button {
   font-family: 'Inter', sans-serif !important;
   font-weight: 600 !important;
@@ -1300,7 +1307,7 @@ logo_b64 = load_logo_b64()
 logo_html = ('<img src="data:image/png;base64,' + logo_b64 + '" alt="Joby"/>'
              if logo_b64 else '<span class="fallback">🛠️</span>')
 
-# === Top utility row: dark mode toggle, right-aligned ===
+# === Top utility row: dark mode toggle ===
 util_l, util_r = st.columns([8, 1.2])
 with util_r:
     theme_label = "🌙 Dark" if st.session_state.theme == "light" else "☀️ Light"
@@ -1308,29 +1315,29 @@ with util_r:
         st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
         st.rerun()
 
-# === Header card built as columns (left: logo+titles, right: LIVE pill + Refresh) ===
-st.markdown('<span id="header-row-marker"></span>', unsafe_allow_html=True)
-hdr_l, hdr_r = st.columns([5, 1.6])
-with hdr_l:
-    st.markdown(
-        '<div class="hdr-left">'
-        + '<div class="logo-mark">' + logo_html + '</div>'
-        + '<div class="titles">'
-        + '<h1>Production Lead Command Center</h1>'
-        + '<div class="sub">Hand Layup · 527 Lamination · ' + ts_str + '</div>'
-        + '</div></div>',
-        unsafe_allow_html=True,
-    )
-with hdr_r:
-    st.markdown(
-        '<div class="hdr-right">'
-        + '<div class="live-pill"><span class="live-dot"></span>LIVE · cached 5min</div>'
-        + '</div>',
-        unsafe_allow_html=True,
-    )
-    if st.button("🔄 Refresh data", use_container_width=True, key="refresh_data"):
-        st.cache_data.clear()
-        st.rerun()
+# === Header card (st.container with key gives us a CSS hook) ===
+with st.container(key="header_card"):
+    hdr_l, hdr_r = st.columns([5, 1.6])
+    with hdr_l:
+        st.markdown(
+            '<div class="hdr-left">'
+            + '<div class="logo-mark">' + logo_html + '</div>'
+            + '<div class="titles">'
+            + '<h1>Production Lead Command Center</h1>'
+            + '<div class="sub">Hand Layup · 527 Lamination · ' + ts_str + '</div>'
+            + '</div></div>',
+            unsafe_allow_html=True,
+        )
+    with hdr_r:
+        st.markdown(
+            '<div class="hdr-right">'
+            + '<div class="live-pill"><span class="live-dot"></span>LIVE · cached 5min</div>'
+            + '</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("🔄 Refresh data", use_container_width=True, key="refresh_data"):
+            st.cache_data.clear()
+            st.rerun()
 
 # === Load data ===
 try:
@@ -2137,7 +2144,7 @@ with tab_analytics:
             q_with_cat["category"] = q_with_cat["defect_code"].apply(categorize_defect)
             cat_agg = q_with_cat[q_with_cat["category"] != "Other"].groupby("category").agg(
                 total=("issue_id", "count"),
-                scraps=("disposition", lambda s: int((s == "Scrap").sum())),
+                scraps=("disposition", lambda s: int((s == "Scrapscraps=("disposition", lambda s: int((s == "Scrap").sum())),
             ).reset_index().sort_values("total", ascending=True).tail(10)
 
             if HAS_PLOTLY and not cat_agg.empty:
