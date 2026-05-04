@@ -159,6 +159,9 @@ def load_pipeline():
     df["stage"] = df["status"].map(STATUS_TO_STAGE)
     df["pn_norm"] = df["part_number"].apply(normalize_pn)
     df["stage_rank"] = df["stage"].map(STAGE_RANK)
+    # Strip timezone from updated_at so comparisons against pd.Timestamp.now() work
+    if "updated_at" in df.columns:
+        df["updated_at"] = pd.to_datetime(df["updated_at"], utc=True, errors="coerce").dt.tz_localize(None)
     return df
 
 
@@ -169,7 +172,8 @@ def load_quality():
         return df
     df["pn_norm"] = df["part_number"].apply(normalize_pn)
     df["clean_defect"] = df["defect_code"].apply(clean_defect_code)
-    df["created_dt"] = pd.to_datetime(df["created"])
+    # Parse as UTC then strip tz so all downstream comparisons against naive timestamps work
+    df["created_dt"] = pd.to_datetime(df["created"], utc=True, errors="coerce").dt.tz_localize(None)
     df["created_str"] = df["created_dt"].dt.strftime("%-m/%-d")
     df["created_date"] = df["created_dt"].dt.date
     df["dow"] = df["created_dt"].dt.day_name()
@@ -951,9 +955,15 @@ with tab_analytics:
 
     ready_parts = pipeline_df[pipeline_df["stage"] == "Ready to Layup"].copy()
     if not ready_parts.empty and "updated_at" in ready_parts.columns:
-        ready_parts["age_days"] = (pd.Timestamp.now() - pd.to_datetime(ready_parts["updated_at"])).dt.days
-        avg_dwell = int(ready_parts["age_days"].median()) if not ready_parts.empty else 0
-        max_dwell = int(ready_parts["age_days"].max()) if not ready_parts.empty else 0
+        # updated_at is already timezone-naive thanks to load_pipeline()
+        now_naive = pd.Timestamp.now()
+        try:
+            ready_parts["age_days"] = (now_naive - ready_parts["updated_at"]).dt.days
+            avg_dwell = int(ready_parts["age_days"].median()) if not ready_parts["age_days"].dropna().empty else 0
+            max_dwell = int(ready_parts["age_days"].max()) if not ready_parts["age_days"].dropna().empty else 0
+        except Exception:
+            avg_dwell = 0
+            max_dwell = 0
     else:
         avg_dwell = 0
         max_dwell = 0
