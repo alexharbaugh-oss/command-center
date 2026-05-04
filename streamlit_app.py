@@ -596,7 +596,17 @@ BASE_CSS = """
 /* === HIDE STREAMLIT CHROME === */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
-header[data-testid="stHeader"] { display: none; }
+header[data-testid="stHeader"] {
+  background: transparent !important;
+  height: 0 !important;
+}
+header[data-testid="stHeader"] [data-testid="stToolbar"] { display: none; }
+[data-testid="collapsedControl"] {
+  display: block !important;
+  visibility: visible !important;
+  top: 0.5rem !important;
+  z-index: 999999 !important;
+}
 [data-testid="stDecoration"] { display: none; }
 [data-testid="stToolbar"] { display: none; }
 .stDeployButton { display: none !important; }
