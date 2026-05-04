@@ -16,6 +16,7 @@ Locked filters per spec (4/22/26):
 
 Snapshots: Each run appends to manufacturing.default.kqw_snapshots so
 the "What Changed" tab can diff current state vs the prior shift.
+Shift hand-off is 5:30 PM PT — AM = before 17:30, PM = 17:30+.
 """
 
 import io
@@ -192,21 +193,23 @@ def _esc(s):
     return "'" + str(s).replace("'", "''") + "'"
 
 
+def _shift_for(now_pt: datetime) -> str:
+    """AM = before 5:30 PM PT, PM = 5:30 PM and after."""
+    return "AM" if (now_pt.hour, now_pt.minute) < (17, 30) else "PM"
+
+
 def write_snapshot_if_due(scored: pd.DataFrame, now_pt: datetime) -> str:
     """
     Append a snapshot row per pipeline part to SNAPSHOT_TABLE,
     but only if the last snapshot was more than SNAPSHOT_MIN_GAP_MINUTES
     ago OR was for a different shift.
-
-    Returns a status string for display.
     """
     if scored.empty:
         return "No pipeline data — no snapshot written."
 
-    shift = "AM" if now_pt.hour < 12 else "PM"
+    shift = _shift_for(now_pt)
     snap_date_str = now_pt.strftime("%Y-%m-%d")
 
-    # Check most recent snapshot
     try:
         last = _run_query(f"""
             SELECT MAX(snapshot_ts) AS last_ts, MAX(shift) AS last_shift
@@ -216,18 +219,15 @@ def write_snapshot_if_due(scored: pd.DataFrame, now_pt: datetime) -> str:
         """)
         if not last.empty and last.iloc[0]["last_ts"] is not None:
             last_ts = pd.to_datetime(last.iloc[0]["last_ts"])
-            # Compare against now_pt naively (last_ts is UTC; convert to PT for fair compare)
             last_ts_pt = last_ts.tz_localize("UTC").tz_convert("America/Los_Angeles").tz_localize(None) \
                 if last_ts.tzinfo is None else last_ts.tz_convert("America/Los_Angeles").tz_localize(None)
             now_naive = now_pt.replace(tzinfo=None)
             elapsed_min = (now_naive - last_ts_pt).total_seconds() / 60.0
             if 0 <= elapsed_min < SNAPSHOT_MIN_GAP_MINUTES:
                 return f"Snapshot already taken {int(elapsed_min)} min ago. Skipping."
-    except Exception as e:
-        # If table read fails (e.g. table empty / first run), just proceed
+    except Exception:
         pass
 
-    # Build VALUES clause — batch insert
     ts_str = now_pt.strftime("%Y-%m-%d %H:%M:%S")
     rows_sql = []
     for _, r in scored.iterrows():
@@ -250,7 +250,6 @@ def write_snapshot_if_due(scored: pd.DataFrame, now_pt: datetime) -> str:
             ")"
         )
 
-    # Insert in chunks of 100 to keep SQL string size sane
     CHUNK = 100
     inserted = 0
     for i in range(0, len(rows_sql), CHUNK):
@@ -265,18 +264,15 @@ def write_snapshot_if_due(scored: pd.DataFrame, now_pt: datetime) -> str:
 def load_prior_snapshot(now_pt: datetime) -> pd.DataFrame:
     """
     Get the most recent snapshot from BEFORE the current shift's start.
-    AM run (now_pt.hour<12) compares to yesterday PM (or earlier).
-    PM run compares to today AM (or earlier).
-    Returns one row per pn_norm — the latest within the prior shift window.
+    AM run compares to anything before today.
+    PM run compares to today AM (or earlier if no AM today).
     """
-    shift = "AM" if now_pt.hour < 12 else "PM"
+    shift = _shift_for(now_pt)
     today_str = now_pt.strftime("%Y-%m-%d")
 
     if shift == "AM":
-        # Compare to anything before today
         cutoff_clause = f"snapshot_date < DATE '{today_str}'"
     else:
-        # Compare to today's AM snapshots only
         cutoff_clause = f"snapshot_date = DATE '{today_str}' AND shift = 'AM'"
 
     sql = f"""
@@ -300,16 +296,7 @@ def load_prior_snapshot(now_pt: datetime) -> pd.DataFrame:
 
 
 def compute_deltas(current: pd.DataFrame, prior: pd.DataFrame) -> dict:
-    """
-    Diff current vs prior. Returns a dict of categorized change lists.
-      new_in_pipeline:    parts in current not in prior
-      gone_from_pipeline: parts in prior not in current
-      stage_changed:      same part, stage moved
-      new_scrap:          scrap count went up
-      new_wrinkle:        wrinkle count went up
-      severity_up:        severity got worse
-      severity_down:      severity got better
-    """
+    """Diff current vs prior. Returns categorized change lists."""
     out = {
         "new_in_pipeline":    [],
         "gone_from_pipeline": [],
@@ -328,55 +315,39 @@ def compute_deltas(current: pd.DataFrame, prior: pd.DataFrame) -> dict:
     cur_keys = set(cur_by_me.keys())
     pri_keys = set(pri_by_me.keys())
 
-    # New / gone
     for k in cur_keys - pri_keys:
         out["new_in_pipeline"].append(cur_by_me[k])
     for k in pri_keys - cur_keys:
         out["gone_from_pipeline"].append(pri_by_me[k])
 
-    # Same-part diffs
     for k in cur_keys & pri_keys:
         cur = cur_by_me[k]
         pri = pri_by_me[k]
 
         if (cur.get("stage") or "") != (pri.get("stage") or ""):
             out["stage_changed"].append({
-                "row": cur,
-                "from": pri.get("stage"),
-                "to":   cur.get("stage"),
+                "row": cur, "from": pri.get("stage"), "to": cur.get("stage"),
             })
 
         cur_scr = int(cur.get("scrap_count") or 0)
         pri_scr = int(pri.get("scraps") or 0)
         if cur_scr > pri_scr:
-            out["new_scrap"].append({
-                "row": cur,
-                "from": pri_scr,
-                "to":   cur_scr,
-            })
+            out["new_scrap"].append({"row": cur, "from": pri_scr, "to": cur_scr})
 
         cur_wnk = int(cur.get("wrinkle_count") or 0)
         pri_wnk = int(pri.get("wrinkles") or 0)
         if cur_wnk > pri_wnk:
-            out["new_wrinkle"].append({
-                "row": cur,
-                "from": pri_wnk,
-                "to":   cur_wnk,
-            })
+            out["new_wrinkle"].append({"row": cur, "from": pri_wnk, "to": cur_wnk})
 
         cur_sev = SEV_RANK.get(cur.get("severity"), 99)
         pri_sev = SEV_RANK.get(pri.get("severity"), 99)
-        if cur_sev < pri_sev:  # got worse (lower rank = more severe)
+        if cur_sev < pri_sev:
             out["severity_up"].append({
-                "row": cur,
-                "from": pri.get("severity"),
-                "to":   cur.get("severity"),
+                "row": cur, "from": pri.get("severity"), "to": cur.get("severity"),
             })
         elif cur_sev > pri_sev:
             out["severity_down"].append({
-                "row": cur,
-                "from": pri.get("severity"),
-                "to":   cur.get("severity"),
+                "row": cur, "from": pri.get("severity"), "to": cur.get("severity"),
             })
 
     return out
@@ -545,6 +516,7 @@ with st.sidebar:
     st.caption("Areas: 527 Lam, Kitting, Hand Trim, ME-Comp Fab")
     st.caption("Source: jira.issues + onion_silver.quality_issues_view")
     st.caption(f"Snapshots: {SNAPSHOT_TABLE}")
+    st.caption("Shift hand-off: 5:30 PM PT")
 
 # Load data
 try:
@@ -678,11 +650,11 @@ def render_delta_line(row, prefix="", suffix=""):
 
 
 # ============================================================
-# TABS
+# TABS — In Layup, Ready to Layup, Upstream, Search, Export, What Changed
 # ============================================================
 
 tab_floor, tab_next, tab_up, tab_search, tab_export, tab_delta = st.tabs([
-    "🏭 On the Floor",
+    "🏭 In Layup",
     "📋 Ready to Layup",
     "⏰ Upstream",
     "🔍 Search",
@@ -690,129 +662,14 @@ tab_floor, tab_next, tab_up, tab_search, tab_export, tab_delta = st.tabs([
     "📊 What Changed",
 ])
 
-with tab_delta:
-    st.subheader("What changed since the prior shift")
-
-    prior = load_prior_snapshot(now_pt)
-    if prior.empty:
-        st.info(
-            "No prior snapshot found yet. The first run kicks off the history — "
-            "by your next shift, this tab will show what changed since now."
-        )
-        st.caption(st.session_state.get("snapshot_msg", ""))
-    else:
-        prior_ts = pd.to_datetime(prior["snapshot_ts"]).max()
-        prior_shift = prior.iloc[0].get("shift", "")
-        prior_date = prior.iloc[0].get("snapshot_date", "")
-        deltas = compute_deltas(scored, prior)
-
-        n_new   = len(deltas["new_in_pipeline"])
-        n_gone  = len(deltas["gone_from_pipeline"])
-        n_stage = len(deltas["stage_changed"])
-        n_scrap = len(deltas["new_scrap"])
-        n_wnk   = len(deltas["new_wrinkle"])
-        n_up    = len(deltas["severity_up"])
-        n_down  = len(deltas["severity_down"])
-        total_changes = n_new + n_gone + n_stage + n_scrap + n_wnk + n_up + n_down
-
-        st.markdown(f"""
-        <div class="delta-summary">
-          <h3>Comparing to: {prior_date} {prior_shift} ({prior_ts.strftime('%-I:%M %p UTC')})</h3>
-          <div class="sub">{total_changes} change{'s' if total_changes != 1 else ''} since the prior shift</div>
-          <div class="stats">
-            🆕 {n_new} new  ·  🚪 {n_gone} gone  ·  ➡️ {n_stage} stage moves  ·
-            🔴 {n_scrap} new scrap  ·  〰️ {n_wnk} new wrinkle  ·
-            ⬆️ {n_up} severity up  ·  ⬇️ {n_down} severity down
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if total_changes == 0:
-            st.success("No changes since the prior shift. Pipeline state is unchanged.")
-
-        # --- Worst-news first ---
-        if deltas["new_scrap"]:
-            html = "<div class='delta-section warn'><h4>🔴 New scrap events</h4>"
-            for d in deltas["new_scrap"]:
-                html += render_delta_line(
-                    d["row"],
-                    suffix=f" — scraps <b>{d['from']} → {d['to']}</b>",
-                )
-            html += "</div>"
-            st.markdown(html, unsafe_allow_html=True)
-
-        if deltas["new_wrinkle"]:
-            html = "<div class='delta-section warn'><h4>〰️ New wrinkle events</h4>"
-            for d in deltas["new_wrinkle"]:
-                html += render_delta_line(
-                    d["row"],
-                    suffix=f" — wrinkles <b>{d['from']} → {d['to']}</b>",
-                )
-            html += "</div>"
-            st.markdown(html, unsafe_allow_html=True)
-
-        if deltas["severity_up"]:
-            html = "<div class='delta-section warn'><h4>⬆️ Severity escalated</h4>"
-            for d in deltas["severity_up"]:
-                html += render_delta_line(
-                    d["row"],
-                    suffix=f" — <b>{d['from']} → {d['to']}</b>",
-                )
-            html += "</div>"
-            st.markdown(html, unsafe_allow_html=True)
-
-        if deltas["new_in_pipeline"]:
-            html = "<div class='delta-section move'><h4>🆕 New parts in pipeline</h4>"
-            for r in deltas["new_in_pipeline"]:
-                html += render_delta_line(
-                    r,
-                    suffix=f" — entered at <b>{r.get('stage','')}</b>",
-                )
-            html += "</div>"
-            st.markdown(html, unsafe_allow_html=True)
-
-        if deltas["stage_changed"]:
-            html = "<div class='delta-section move'><h4>➡️ Stage changes</h4>"
-            for d in deltas["stage_changed"]:
-                html += render_delta_line(
-                    d["row"],
-                    suffix=f" — <b>{d['from']} → {d['to']}</b>",
-                )
-            html += "</div>"
-            st.markdown(html, unsafe_allow_html=True)
-
-        if deltas["gone_from_pipeline"]:
-            html = "<div class='delta-section move'><h4>🚪 Gone from pipeline</h4>"
-            for r in deltas["gone_from_pipeline"]:
-                html += render_delta_line(
-                    r,
-                    suffix=f" — was at <b>{r.get('stage','')}</b>",
-                )
-            html += "</div>"
-            st.markdown(html, unsafe_allow_html=True)
-
-        if deltas["severity_down"]:
-            html = "<div class='delta-section good'><h4>⬇️ Severity improved</h4>"
-            for d in deltas["severity_down"]:
-                html += render_delta_line(
-                    d["row"],
-                    suffix=f" — <b>{d['from']} → {d['to']}</b>",
-                )
-            html += "</div>"
-            st.markdown(html, unsafe_allow_html=True)
-
-    st.divider()
-    st.caption(st.session_state.get("snapshot_msg", "(no snapshot status)"))
-
-
 with tab_floor:
-    st.subheader("On the Floor")
+    st.subheader("In Layup")
     st.caption("Parts in **Layup** — what to check during your walk")
     on_floor = filter_and_sort(scored, ["Layup"])
     flagged = on_floor[on_floor["severity"] != "CLEAN"]
-    st.write(f"**{len(on_floor)}** parts on the floor — **{len(flagged)}** need attention")
+    st.write(f"**{len(on_floor)}** parts in layup — **{len(flagged)}** need attention")
     if flagged.empty:
-        st.success("✅ No flagged parts on the floor right now.")
+        st.success("✅ No flagged parts in layup right now.")
     else:
         for _, row in flagged.iterrows():
             render_alert(row)
@@ -914,7 +771,7 @@ with tab_export:
         with st.spinner("Building PDF…"):
             from pdf_export import build_pdf
             pdf_bytes = build_pdf(scored, now_pt)
-        shift = "AM" if now_pt.hour < 12 else "PM"
+        shift = _shift_for(now_pt)
         fname = f"Kanban_Quality_Watch_{now_pt.strftime('%-m-%-d-%y')}_{shift}.pdf"
         st.download_button(
             "⬇️ Download PDF",
@@ -924,3 +781,103 @@ with tab_export:
             use_container_width=True,
         )
         st.success(f"PDF ready: **{fname}**")
+
+
+with tab_delta:
+    st.subheader("What changed since the prior shift")
+
+    prior = load_prior_snapshot(now_pt)
+    if prior.empty:
+        st.info(
+            "No prior snapshot found yet. The first run kicks off the history — "
+            "by your next shift, this tab will show what changed since now."
+        )
+        st.caption(st.session_state.get("snapshot_msg", ""))
+    else:
+        prior_ts = pd.to_datetime(prior["snapshot_ts"]).max()
+        prior_shift = prior.iloc[0].get("shift", "")
+        prior_date = prior.iloc[0].get("snapshot_date", "")
+        deltas = compute_deltas(scored, prior)
+
+        n_new   = len(deltas["new_in_pipeline"])
+        n_gone  = len(deltas["gone_from_pipeline"])
+        n_stage = len(deltas["stage_changed"])
+        n_scrap = len(deltas["new_scrap"])
+        n_wnk   = len(deltas["new_wrinkle"])
+        n_up    = len(deltas["severity_up"])
+        n_down  = len(deltas["severity_down"])
+        total_changes = n_new + n_gone + n_stage + n_scrap + n_wnk + n_up + n_down
+
+        st.markdown(f"""
+        <div class="delta-summary">
+          <h3>Comparing to: {prior_date} {prior_shift} ({prior_ts.strftime('%-I:%M %p UTC')})</h3>
+          <div class="sub">{total_changes} change{'s' if total_changes != 1 else ''} since the prior shift</div>
+          <div class="stats">
+            🆕 {n_new} new  ·  🚪 {n_gone} gone  ·  ➡️ {n_stage} stage moves  ·
+            🔴 {n_scrap} new scrap  ·  〰️ {n_wnk} new wrinkle  ·
+            ⬆️ {n_up} severity up  ·  ⬇️ {n_down} severity down
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if total_changes == 0:
+            st.success("No changes since the prior shift. Pipeline state is unchanged.")
+
+        if deltas["new_scrap"]:
+            html = "<div class='delta-section warn'><h4>🔴 New scrap events</h4>"
+            for d in deltas["new_scrap"]:
+                html += render_delta_line(d["row"],
+                    suffix=f" — scraps <b>{d['from']} → {d['to']}</b>")
+            html += "</div>"
+            st.markdown(html, unsafe_allow_html=True)
+
+        if deltas["new_wrinkle"]:
+            html = "<div class='delta-section warn'><h4>〰️ New wrinkle events</h4>"
+            for d in deltas["new_wrinkle"]:
+                html += render_delta_line(d["row"],
+                    suffix=f" — wrinkles <b>{d['from']} → {d['to']}</b>")
+            html += "</div>"
+            st.markdown(html, unsafe_allow_html=True)
+
+        if deltas["severity_up"]:
+            html = "<div class='delta-section warn'><h4>⬆️ Severity escalated</h4>"
+            for d in deltas["severity_up"]:
+                html += render_delta_line(d["row"],
+                    suffix=f" — <b>{d['from']} → {d['to']}</b>")
+            html += "</div>"
+            st.markdown(html, unsafe_allow_html=True)
+
+        if deltas["new_in_pipeline"]:
+            html = "<div class='delta-section move'><h4>🆕 New parts in pipeline</h4>"
+            for r in deltas["new_in_pipeline"]:
+                html += render_delta_line(r,
+                    suffix=f" — entered at <b>{r.get('stage','')}</b>")
+            html += "</div>"
+            st.markdown(html, unsafe_allow_html=True)
+
+        if deltas["stage_changed"]:
+            html = "<div class='delta-section move'><h4>➡️ Stage changes</h4>"
+            for d in deltas["stage_changed"]:
+                html += render_delta_line(d["row"],
+                    suffix=f" — <b>{d['from']} → {d['to']}</b>")
+            html += "</div>"
+            st.markdown(html, unsafe_allow_html=True)
+
+        if deltas["gone_from_pipeline"]:
+            html = "<div class='delta-section move'><h4>🚪 Gone from pipeline</h4>"
+            for r in deltas["gone_from_pipeline"]:
+                html += render_delta_line(r,
+                    suffix=f" — was at <b>{r.get('stage','')}</b>")
+            html += "</div>"
+            st.markdown(html, unsafe_allow_html=True)
+
+        if deltas["severity_down"]:
+            html = "<div class='delta-section good'><h4>⬇️ Severity improved</h4>"
+            for d in deltas["severity_down"]:
+                html += render_delta_line(d["row"],
+                    suffix=f" — <b>{d['from']} → {d['to']}</b>")
+            html += "</div>"
+            st.markdown(html, unsafe_allow_html=True)
+
+    st.divider()
+    st.caption(st.session_state.get("snapshot_msg", "(no snapshot status)"))
