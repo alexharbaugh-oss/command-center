@@ -598,14 +598,19 @@ BASE_CSS = """
 footer { visibility: hidden; }
 header[data-testid="stHeader"] {
   background: transparent !important;
-  height: 0 !important;
 }
-header[data-testid="stHeader"] [data-testid="stToolbar"] { display: none; }
+header[data-testid="stHeader"] [data-testid="stToolbar"] { display: none !important; }
+header[data-testid="stHeader"] [data-testid="stDecoration"] { display: none !important; }
 [data-testid="collapsedControl"] {
-  display: block !important;
+  display: flex !important;
   visibility: visible !important;
-  top: 0.5rem !important;
   z-index: 999999 !important;
+}
+[data-testid="collapsedControl"] svg {
+  fill: var(--accent) !important;
+  color: var(--accent) !important;
+  width: 24px !important;
+  height: 24px !important;
 }
 [data-testid="stDecoration"] { display: none; }
 [data-testid="stToolbar"] { display: none; }
