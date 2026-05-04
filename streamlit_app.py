@@ -600,8 +600,38 @@ footer { visibility: hidden; }
 [data-testid="stStatusWidget"] { display: none !important; }
 [data-testid="stDecoration"] { display: none !important; }
 [class*="viewerBadge"] { display: none !important; }
-[data-testid="stHeader"] {
-  background: transparent !important;
+/* === Sidebar reopen arrow — force visible at all times === */
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"] {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: fixed !important;
+  top: 0.5rem !important;
+  left: 0.5rem !important;
+  z-index: 999999 !important;
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border-default) !important;
+  border-radius: var(--radius-sm) !important;
+  padding: 4px !important;
+  box-shadow: var(--shadow-md) !important;
+}
+[data-testid="collapsedControl"] svg,
+[data-testid="stSidebarCollapsedControl"] svg,
+[data-testid="collapsedControl"] button svg,
+[data-testid="stSidebarCollapsedControl"] button svg {
+  fill: var(--accent) !important;
+  color: var(--accent) !important;
+  width: 22px !important;
+  height: 22px !important;
+}
+
+/* Sidebar's own collapse chevron (when sidebar is open) */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="baseButton-headerNoPadding"] {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
 }
 }
 header[data-testid="stHeader"] [data-testid="stToolbar"] { display: none !important; }
