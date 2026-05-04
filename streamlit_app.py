@@ -1,20 +1,26 @@
 """
 Production Lead Command Center — Hand Layup
-On-demand Quality Watch + Analytics + Improvement Tracker for Team Leads.
+Quality Watch · Analytics · Improvement Tracker
 
-Joby brand palette (8.1 Primary palette):
-  Off-Black     #0E1620   (text primary)
-  Off-White     #F5F4DF   (brand neutral; UI uses softened #FAFAF6)
-  Joby Gray     #CDD0D1   (borders / dividers)
-  Joby Blue     #007AE5   (primary accent / links / focus)
-  Light Blue    #7CC3FF
-  Lightest Blue #C1DEEF   (subtle highlights)
-  Dark Blue     #1C3F99
-  Dark Blue UI  #083E6F   (digital interface anchor — headers, section bars)
+Required files in repo root:
+  streamlit_app.py
+  pdf_export.py
+  joby_logo.png
+  requirements.txt
+  packages.txt
+
+Required Streamlit secrets:
+  DATABRICKS_HOST, DATABRICKS_HTTP_PATH, DATABRICKS_TOKEN
+
+Tables:
+  manufacturing.default.kqw_snapshots
+  manufacturing.default.kqw_watchlist
 """
 
 import io
 import re
+import base64
+from pathlib import Path
 from datetime import datetime, timedelta, timezone, date
 from collections import defaultdict
 
@@ -45,6 +51,7 @@ WATCHLIST_TABLE = "manufacturing.default.kqw_watchlist"
 SNAPSHOT_MIN_GAP_MINUTES = 30
 MIN_DAYS_FOR_VERDICT = 14
 IMPROVEMENT_THRESHOLD = 0.25
+APP_VERSION = "v0.4 · brand"
 
 STATUS_TO_STAGE = {
     "Scheduled":         "Scheduled",
@@ -80,6 +87,26 @@ SEV_COLOR = {
     "YELLOW": "#d4920b",
     "CLEAN":  "#1D9E75",
 }
+
+# ============================================================
+# THEME (light/dark)
+# ============================================================
+
+if "theme" not in st.session_state:
+    st.session_state.theme = "light"
+
+
+@st.cache_data
+def load_logo_b64():
+    """Load joby_logo.png from repo root, return base64 string or None."""
+    for candidate in [Path(__file__).parent / "joby_logo.png", Path("joby_logo.png")]:
+        try:
+            if candidate.exists():
+                return base64.b64encode(candidate.read_bytes()).decode("ascii")
+        except Exception:
+            continue
+    return None
+
 
 # ============================================================
 # DATABRICKS
@@ -197,24 +224,17 @@ def load_watchlist():
 
 
 def add_to_watchlist(pn_norm, pn_raw, summary, intervention_date=None, intervention_note=None):
-    existing_sql = (
-        "SELECT pn_norm, status FROM " + WATCHLIST_TABLE + " "
-        "WHERE pn_norm = " + _esc(pn_norm)
-    )
-    existing = _run_query(existing_sql)
+    existing = _run_query("SELECT pn_norm, status FROM " + WATCHLIST_TABLE + " WHERE pn_norm = " + _esc(pn_norm))
     if not existing.empty:
         cur_status = existing.iloc[0]["status"]
         if cur_status == "active":
             return "Already on watchlist."
         upd = (
             "UPDATE " + WATCHLIST_TABLE + " SET "
-            "status = 'active', "
-            "added_ts = CURRENT_TIMESTAMP(), "
-            "added_date = CURRENT_DATE(), "
+            "status = 'active', added_ts = CURRENT_TIMESTAMP(), added_date = CURRENT_DATE(), "
             "intervention_date = " + (_esc(intervention_date.strftime("%Y-%m-%d")) if intervention_date else "NULL") + ", "
             "intervention_note = " + _esc(intervention_note) + ", "
-            "closed_date = NULL, close_note = NULL, "
-            "last_updated = CURRENT_TIMESTAMP() "
+            "closed_date = NULL, close_note = NULL, last_updated = CURRENT_TIMESTAMP() "
             "WHERE pn_norm = " + _esc(pn_norm)
         )
         _run_statement(upd)
@@ -223,14 +243,9 @@ def add_to_watchlist(pn_norm, pn_raw, summary, intervention_date=None, intervent
     intv_date_sql = "DATE '" + intervention_date.strftime("%Y-%m-%d") + "'" if intervention_date else "NULL"
     sql = (
         "INSERT INTO " + WATCHLIST_TABLE + " VALUES ("
-        + _esc(pn_norm) + ", "
-        + _esc(pn_raw) + ", "
-        + _esc((summary or "")[:200]) + ", "
-        + "CURRENT_DATE(), CURRENT_TIMESTAMP(), "
-        + intv_date_sql + ", "
-        + _esc(intervention_note) + ", "
-        + "'active', NULL, NULL, "
-        + "CURRENT_TIMESTAMP())"
+        + _esc(pn_norm) + ", " + _esc(pn_raw) + ", " + _esc((summary or "")[:200]) + ", "
+        + "CURRENT_DATE(), CURRENT_TIMESTAMP(), " + intv_date_sql + ", "
+        + _esc(intervention_note) + ", 'active', NULL, NULL, CURRENT_TIMESTAMP())"
     )
     _run_statement(sql)
     return "Added to watchlist."
@@ -261,8 +276,7 @@ def close_watchlist_item(pn_norm, status, close_note):
 
 
 def delete_from_watchlist(pn_norm):
-    sql = "DELETE FROM " + WATCHLIST_TABLE + " WHERE pn_norm = " + _esc(pn_norm)
-    _run_statement(sql)
+    _run_statement("DELETE FROM " + WATCHLIST_TABLE + " WHERE pn_norm = " + _esc(pn_norm))
 
 
 def compute_improvement(quality_df, pn_norm, intervention_date=None):
@@ -349,10 +363,8 @@ def write_snapshot_if_due(scored, now_pt):
     snap_date_str = now_pt.strftime("%Y-%m-%d")
     try:
         check_sql = (
-            "SELECT MAX(snapshot_ts) AS last_ts, MAX(shift) AS last_shift "
-            "FROM " + SNAPSHOT_TABLE + " "
-            "WHERE snapshot_date = DATE '" + snap_date_str + "' "
-            "AND shift = '" + shift + "'"
+            "SELECT MAX(snapshot_ts) AS last_ts FROM " + SNAPSHOT_TABLE + " "
+            "WHERE snapshot_date = DATE '" + snap_date_str + "' AND shift = '" + shift + "'"
         )
         last = _run_query(check_sql)
         if not last.empty and last.iloc[0]["last_ts"] is not None:
@@ -373,13 +385,10 @@ def write_snapshot_if_due(scored, now_pt):
     for _, r in scored.iterrows():
         row_sql = (
             "(TIMESTAMP '" + ts_str + "', DATE '" + snap_date_str + "', '" + shift + "', "
-            + _esc(r.get("issue_id")) + ", "
-            + _esc(r.get("order_number")) + ", "
-            + _esc(r.get("part_number")) + ", "
-            + _esc(r.get("pn_norm")) + ", "
+            + _esc(r.get("issue_id")) + ", " + _esc(r.get("order_number")) + ", "
+            + _esc(r.get("part_number")) + ", " + _esc(r.get("pn_norm")) + ", "
             + _esc((r.get("summary") or "")[:200]) + ", "
-            + _esc(r.get("status")) + ", "
-            + _esc(r.get("stage")) + ", "
+            + _esc(r.get("status")) + ", " + _esc(r.get("stage")) + ", "
             + _esc(r.get("severity")) + ", "
             + str(int(r.get("issue_count") or 0)) + ", "
             + str(int(r.get("scrap_count") or 0)) + ", "
@@ -410,8 +419,7 @@ def load_prior_snapshot(now_pt):
         "SELECT *, ROW_NUMBER() OVER (PARTITION BY pn_norm ORDER BY snapshot_ts DESC) AS rn "
         "FROM " + SNAPSHOT_TABLE + " WHERE " + cutoff_clause + ") "
         "SELECT snapshot_ts, snapshot_date, shift, me_key, mfid, pn_raw, pn_norm, "
-        "summary, status, stage, severity, "
-        "total_issues, scraps, wrinkles, rework, pending "
+        "summary, status, stage, severity, total_issues, scraps, wrinkles, rework, pending "
         "FROM ranked WHERE rn = 1"
     )
     try:
@@ -436,20 +444,16 @@ def compute_deltas(current, prior):
     for k in pri_keys - cur_keys:
         out["gone_from_pipeline"].append(pri_by_me[k])
     for k in cur_keys & pri_keys:
-        cur = cur_by_me[k]
-        pri = pri_by_me[k]
+        cur = cur_by_me[k]; pri = pri_by_me[k]
         if (cur.get("stage") or "") != (pri.get("stage") or ""):
             out["stage_changed"].append({"row": cur, "from": pri.get("stage"), "to": cur.get("stage")})
-        cur_scr = int(cur.get("scrap_count") or 0)
-        pri_scr = int(pri.get("scraps") or 0)
+        cur_scr = int(cur.get("scrap_count") or 0); pri_scr = int(pri.get("scraps") or 0)
         if cur_scr > pri_scr:
             out["new_scrap"].append({"row": cur, "from": pri_scr, "to": cur_scr})
-        cur_wnk = int(cur.get("wrinkle_count") or 0)
-        pri_wnk = int(pri.get("wrinkles") or 0)
+        cur_wnk = int(cur.get("wrinkle_count") or 0); pri_wnk = int(pri.get("wrinkles") or 0)
         if cur_wnk > pri_wnk:
             out["new_wrinkle"].append({"row": cur, "from": pri_wnk, "to": cur_wnk})
-        cur_sev = SEV_RANK.get(cur.get("severity"), 99)
-        pri_sev = SEV_RANK.get(pri.get("severity"), 99)
+        cur_sev = SEV_RANK.get(cur.get("severity"), 99); pri_sev = SEV_RANK.get(pri.get("severity"), 99)
         if cur_sev < pri_sev:
             out["severity_up"].append({"row": cur, "from": pri.get("severity"), "to": cur.get("severity")})
         elif cur_sev > pri_sev:
@@ -531,15 +535,9 @@ def score_pipeline(pipeline, quality):
         wrinkles = sum(1 for i in h if int(i.get("is_wrinkle") or 0) == 1)
         sev = classify_severity(scraps, wrinkles, len(h))
         out.append({
-            **p,
-            "issue_count":   len(h),
-            "scrap_count":   scraps,
-            "rework_count":  rework,
-            "pending_count": pending,
-            "wrinkle_count": wrinkles,
-            "severity":      sev,
-            "sev_rank":      SEV_RANK[sev],
-            "history":       h,
+            **p, "issue_count": len(h), "scrap_count": scraps,
+            "rework_count": rework, "pending_count": pending, "wrinkle_count": wrinkles,
+            "severity": sev, "sev_rank": SEV_RANK[sev], "history": h,
         })
     return pd.DataFrame(out)
 
@@ -564,9 +562,9 @@ def compute_kpis(quality):
     pending = int(((disp == "") | (disp == "Pending")).sum())
     wrinkles = int(quality["is_wrinkle"].sum())
     return {
-        "issues":       n, "scraps": scraps, "wrinkles": wrinkles,
-        "rework":       rework, "pending": pending, "uai": uai,
-        "scrap_rate":   100.0 * scraps / n if n else 0.0,
+        "issues": n, "scraps": scraps, "wrinkles": wrinkles,
+        "rework": rework, "pending": pending, "uai": uai,
+        "scrap_rate": 100.0 * scraps / n if n else 0.0,
         "wrinkle_rate": 100.0 * wrinkles / n if n else 0.0,
     }
 
@@ -579,27 +577,28 @@ def pct_delta(curr, prior):
 
 def fmt_delta(curr, prior, lower_is_better=True):
     if prior == 0 and curr == 0:
-        return ("—", "#9CA3AF")
+        return ("—", "var(--text-faint)")
     pct = pct_delta(curr, prior)
     arrow = "↑" if pct > 0 else ("↓" if pct < 0 else "→")
     sign = "+" if pct > 0 else ""
     if lower_is_better:
-        color = "#1D9E75" if pct < 0 else ("#c0392b" if pct > 0 else "#9CA3AF")
+        color = "var(--sev-green)" if pct < 0 else ("var(--sev-red)" if pct > 0 else "var(--text-faint)")
     else:
-        color = "#1D9E75" if pct > 0 else ("#c0392b" if pct < 0 else "#9CA3AF")
+        color = "var(--sev-green)" if pct > 0 else ("var(--sev-red)" if pct < 0 else "var(--text-faint)")
     return (arrow + " " + sign + str(int(round(pct))) + "%", color)
 
 
 # ============================================================
-# UI / STYLES — Joby brand palette applied
+# CSS — single source of truth, theme-aware via CSS variables
 # ============================================================
 
-st.markdown("""
+BASE_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&display=swap');
+
 :root {
-  /* Joby brand palette */
+  /* === Joby brand palette === */
   --joby-off-black:    #0E1620;
   --joby-off-white:    #F5F4DF;
   --joby-gray:         #CDD0D1;
@@ -609,20 +608,36 @@ st.markdown("""
   --joby-dark-blue:    #1C3F99;
   --joby-dark-blue-ui: #083E6F;
 
-  /* Derived UI tokens */
-  --bg-page:           #FAFAF6;       /* softened off-white for page */
+  /* === Light theme tokens (default) === */
+  --bg-page:           #FAFAF6;
   --bg-card:           #FFFFFF;
   --bg-card-alt:       #F7F7F2;
   --bg-inset:          #F0EFE5;
+  --bg-elevated:       #FFFFFF;
   --border-subtle:     #E8E6D8;
-  --border-default:    var(--joby-gray);
+  --border-default:    #D4D6D8;
+  --border-strong:     var(--joby-gray);
 
   --text-primary:      var(--joby-off-black);
   --text-secondary:    #4A5568;
   --text-muted:        #6B7280;
   --text-faint:        #9CA3AF;
+  --text-inverse:      #FFFFFF;
 
-  /* Severity (unchanged for muscle memory) */
+  --accent:            var(--joby-blue);
+  --accent-hover:      var(--joby-dark-blue-ui);
+  --accent-soft:       rgba(0, 122, 229, 0.08);
+  --accent-strong:     var(--joby-dark-blue-ui);
+
+  --header-bg-start:   var(--joby-dark-blue-ui);
+  --header-bg-end:     var(--joby-dark-blue);
+  --header-text:       #FFFFFF;
+  --header-sub:        var(--joby-lightest);
+
+  --section-bg:        var(--joby-dark-blue-ui);
+  --section-text:      #FFFFFF;
+
+  /* Severity (foreground colors stay constant for muscle memory) */
   --sev-red:        #C0392B;
   --sev-red-bg:     #FDECEA;
   --sev-orange:     #D4730B;
@@ -632,7 +647,6 @@ st.markdown("""
   --sev-green:      #1D9E75;
   --sev-green-bg:   #E8F6F0;
 
-  /* Shadows */
   --shadow-sm:  0 1px 2px rgba(14, 22, 32, 0.04), 0 1px 3px rgba(14, 22, 32, 0.04);
   --shadow-md:  0 2px 4px rgba(14, 22, 32, 0.05), 0 4px 8px rgba(14, 22, 32, 0.04);
   --shadow-lg:  0 4px 12px rgba(14, 22, 32, 0.07), 0 8px 24px rgba(14, 22, 32, 0.04);
@@ -640,79 +654,129 @@ st.markdown("""
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
+
+  --grid-color: #F0EFE5;
 }
 
-/* Base: Inter everywhere, JetBrains Mono for tabular numerics */
+/* === Base typography === */
 html, body, [class*="css"], [data-testid="stAppViewContainer"] {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   color: var(--text-primary);
 }
-[data-testid="stAppViewContainer"] { background: var(--bg-page); }
-[data-testid="stHeader"] { background: transparent; }
+[data-testid="stAppViewContainer"] {
+  background: var(--bg-page) !important;
+}
+[data-testid="stHeader"] { background: transparent !important; }
+[data-testid="stToolbar"] { background: transparent !important; }
 
 .block-container {
-  padding-top: 1rem;
-  padding-bottom: 3rem;
-  max-width: 1240px;
+  padding-top: 0.75rem;
+  padding-bottom: 4rem;
+  max-width: 1280px;
 }
 
-/* Sidebar */
+h1, h2, h3, h4 {
+  color: var(--text-primary);
+  letter-spacing: -0.015em;
+  font-weight: 700;
+}
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3 {
+  color: var(--accent-strong);
+}
+
+/* === Sidebar === */
 [data-testid="stSidebar"] {
-  background: var(--bg-card);
+  background: var(--bg-card) !important;
   border-right: 1px solid var(--border-subtle);
 }
-[data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3 {
-  color: var(--joby-dark-blue-ui);
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
+  color: var(--text-primary);
+}
+[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+  color: var(--accent-strong) !important;
   font-weight: 700;
-  letter-spacing: -0.01em;
 }
 
-/* === Header ============================================== */
+/* === Header === */
 .cmd-header {
-  background: linear-gradient(135deg, var(--joby-dark-blue-ui) 0%, var(--joby-dark-blue) 100%);
-  color: #FFFFFF;
+  background: linear-gradient(135deg, var(--header-bg-start) 0%, var(--header-bg-end) 100%);
+  color: var(--header-text);
   padding: 18px 24px;
   border-radius: var(--radius-md);
   margin-bottom: 16px;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
   box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+}
+.cmd-header::before {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(ellipse at top right, rgba(124, 195, 255, 0.12), transparent 60%);
+  pointer-events: none;
 }
 .cmd-header .logo-mark {
-  /* Drop your Joby logo here — replace contents with <img src="..."/> */
-  width: 40px; height: 40px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  width: 46px; height: 46px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--radius-sm);
   display: flex; align-items: center; justify-content: center;
-  font-size: 18px; flex-shrink: 0;
+  flex-shrink: 0;
+  position: relative; z-index: 1;
 }
-.cmd-header .titles { flex: 1; min-width: 0; }
+.cmd-header .logo-mark img {
+  width: 32px; height: auto;
+  filter: brightness(0) invert(1);  /* white logo on dark header */
+}
+.cmd-header .logo-mark .fallback { font-size: 22px; }
+.cmd-header .titles { flex: 1; min-width: 0; position: relative; z-index: 1; }
 .cmd-header h1 {
   font-size: 22px; font-weight: 700; margin: 0;
-  color: #FFFFFF !important;
-  letter-spacing: -0.015em;
-  line-height: 1.2;
+  color: var(--header-text) !important;
+  letter-spacing: -0.018em; line-height: 1.2;
 }
 .cmd-header .sub {
-  font-size: 12px; color: var(--joby-lightest); margin-top: 4px;
+  font-size: 12px; color: var(--header-sub); margin-top: 4px;
   font-weight: 500; letter-spacing: 0.01em;
 }
-
-/* === Sticky KPI strip ==================================== */
-.sticky-metrics {
-  position: sticky; top: 0;
-  z-index: 100;
-  background: var(--bg-page);
-  padding: 8px 0 4px 0;
-  margin-bottom: 18px;
-  border-bottom: 1px solid var(--border-subtle);
+.cmd-header .live-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 5px 10px; border-radius: 12px;
+  font-size: 11px; font-weight: 600;
+  color: var(--header-sub);
+  position: relative; z-index: 1;
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+.live-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #21E07A;
+  box-shadow: 0 0 0 0 rgba(33, 224, 122, 0.6);
+  animation: livePulse 2s infinite;
+}
+@keyframes livePulse {
+  0%   { box-shadow: 0 0 0 0 rgba(33, 224, 122, 0.6); }
+  70%  { box-shadow: 0 0 0 6px rgba(33, 224, 122, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(33, 224, 122, 0); }
 }
 
-/* === Metric cards ======================================== */
+/* === Sticky KPI strip === */
+.sticky-metrics {
+  position: sticky; top: 0; z-index: 100;
+  background: var(--bg-page);
+  padding: 10px 0 8px 0;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* === Metric cards === */
 .metric-row {
   display: flex; gap: 10px; flex-wrap: wrap;
 }
@@ -721,17 +785,18 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  padding: 12px 16px;
+  padding: 13px 16px;
   box-shadow: var(--shadow-sm);
-  transition: box-shadow 150ms ease, transform 150ms ease;
+  transition: box-shadow 180ms ease, transform 180ms ease, border-color 180ms ease;
 }
 .metric-box:hover {
   box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
+  border-color: var(--border-default);
 }
 .metric-box .label {
   font-size: 10.5px; color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: 0.6px;
+  text-transform: uppercase; letter-spacing: 0.7px;
   font-weight: 600;
 }
 .metric-box .val {
@@ -756,16 +821,16 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
 .val-yellow { color: var(--sev-yellow); }
 .val-green  { color: var(--sev-green); }
 
-/* === Alert cards ========================================= */
+/* === Alert cards === */
 .alert-card {
   border: 1px solid var(--border-subtle);
   border-left: 4px solid;
-  padding: 12px 16px;
+  padding: 13px 16px;
   margin-bottom: 8px;
   background: var(--bg-card);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
-  transition: box-shadow 150ms ease, transform 150ms ease;
+  transition: box-shadow 180ms ease, transform 180ms ease;
 }
 .alert-card:hover {
   box-shadow: var(--shadow-md);
@@ -774,7 +839,6 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
 .alert-card.red    { border-left-color: var(--sev-red);    background: var(--sev-red-bg); }
 .alert-card.orange { border-left-color: var(--sev-orange); background: var(--sev-orange-bg); }
 .alert-card.yellow { border-left-color: var(--sev-yellow); background: var(--sev-yellow-bg); }
-
 .alert-card .pn {
   font-weight: 700; font-size: 14px; color: var(--text-primary);
   letter-spacing: -0.01em;
@@ -790,9 +854,9 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
 }
 .alert-card .badge {
   display: inline-block; font-size: 10px; font-weight: 700;
-  padding: 2px 8px; border-radius: 3px; color: white; margin-right: 8px;
-  letter-spacing: 0.5px;
-  vertical-align: 2px;
+  padding: 2px 8px; border-radius: 3px;
+  color: var(--text-inverse); margin-right: 8px;
+  letter-spacing: 0.6px; vertical-align: 2px;
 }
 .alert-card .badge.red    { background: var(--sev-red); }
 .alert-card .badge.orange { background: var(--sev-orange); }
@@ -804,23 +868,22 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
   border-left: 2px solid var(--border-default);
   font-variant-numeric: tabular-nums;
 }
-.history-scrap {
-  color: var(--sev-red); font-weight: 600;
-}
+.history-scrap { color: var(--sev-red); font-weight: 600; }
 
-/* === Section headers ===================================== */
+/* === Section headers === */
 .section-header {
-  background: var(--joby-dark-blue-ui);
-  color: #FFFFFF;
+  background: var(--section-bg);
+  color: var(--section-text);
   padding: 9px 16px;
   border-radius: var(--radius-sm);
   margin: 22px 0 12px 0;
   font-weight: 700; font-size: 12px;
   letter-spacing: 0.7px;
   box-shadow: var(--shadow-sm);
+  border-left: 3px solid var(--joby-blue);
 }
 
-/* === Goal card =========================================== */
+/* === Goal card === */
 .goal-card {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
@@ -829,11 +892,11 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
   border-left: 5px solid var(--joby-blue);
   box-shadow: var(--shadow-sm);
 }
-.goal-card.on-pace  { border-left-color: var(--sev-green); background: linear-gradient(to right, var(--sev-green-bg), var(--bg-card) 70%); }
-.goal-card.off-pace { border-left-color: var(--sev-red);   background: linear-gradient(to right, var(--sev-red-bg),  var(--bg-card) 70%); }
+.goal-card.on-pace  { border-left-color: var(--sev-green); }
+.goal-card.off-pace { border-left-color: var(--sev-red); }
 .goal-card h3 {
   margin: 0 0 8px 0; font-size: 15px;
-  color: var(--joby-dark-blue-ui); font-weight: 700;
+  color: var(--accent-strong); font-weight: 700;
   letter-spacing: -0.01em;
 }
 .goal-card .progress {
@@ -843,16 +906,12 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
 .goal-card .progress-fill {
   height: 100%;
   background: linear-gradient(to right, var(--sev-green), var(--joby-blue));
-  transition: width 300ms ease;
+  transition: width 400ms ease;
 }
-.goal-card .progress-fill.warn {
-  background: linear-gradient(to right, var(--sev-yellow), var(--sev-orange));
-}
-.goal-card .progress-fill.bad {
-  background: linear-gradient(to right, var(--sev-red), var(--sev-orange));
-}
+.goal-card .progress-fill.warn { background: linear-gradient(to right, var(--sev-yellow), var(--sev-orange)); }
+.goal-card .progress-fill.bad  { background: linear-gradient(to right, var(--sev-red), var(--sev-orange)); }
 
-/* === Delta cards ========================================= */
+/* === Delta cards === */
 .delta-section {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
@@ -876,20 +935,17 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
 .delta-line b { font-family: 'Inter', sans-serif; }
 
 .delta-summary {
-  background: linear-gradient(135deg, var(--joby-dark-blue-ui) 0%, var(--joby-dark-blue) 100%);
-  color: #FFFFFF;
+  background: linear-gradient(135deg, var(--header-bg-start) 0%, var(--header-bg-end) 100%);
+  color: var(--header-text);
   padding: 16px 22px; border-radius: var(--radius-md);
   margin-bottom: 16px;
   box-shadow: var(--shadow-md);
 }
 .delta-summary h3 {
-  margin: 0 0 6px 0; font-size: 16px; color: #FFFFFF;
+  margin: 0 0 6px 0; font-size: 16px; color: var(--header-text) !important;
   font-weight: 700; letter-spacing: -0.01em;
 }
-.delta-summary .sub {
-  font-size: 12px; color: var(--joby-lightest);
-  font-weight: 500;
-}
+.delta-summary .sub { font-size: 12px; color: var(--header-sub); font-weight: 500; }
 .delta-summary .stats {
   font-size: 13px; margin-top: 10px;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
@@ -897,7 +953,7 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
   color: rgba(255,255,255,0.95);
 }
 
-/* === Watchlist cards ===================================== */
+/* === Watchlist cards === */
 .watch-card {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
@@ -906,19 +962,14 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
   margin-bottom: 12px;
   border-left: 4px solid var(--text-muted);
   box-shadow: var(--shadow-sm);
-  transition: box-shadow 150ms ease;
+  transition: box-shadow 180ms ease;
 }
 .watch-card:hover { box-shadow: var(--shadow-md); }
-.watch-card.improving { border-left-color: var(--sev-green);  background: linear-gradient(to right, var(--sev-green-bg), var(--bg-card) 50%); }
-.watch-card.flat      { border-left-color: var(--sev-yellow); background: linear-gradient(to right, var(--sev-yellow-bg), var(--bg-card) 50%); }
-.watch-card.worsening { border-left-color: var(--sev-red);    background: linear-gradient(to right, var(--sev-red-bg), var(--bg-card) 50%); }
-.watch-card.too_soon  { border-left-color: var(--joby-blue);  background: linear-gradient(to right, var(--joby-lightest), var(--bg-card) 50%); }
-.watch-card.no_data   { border-left-color: var(--joby-gray);  background: var(--bg-card-alt); }
-
-.watch-card h4 {
-  margin: 0 0 6px 0; font-size: 14px; color: var(--text-primary);
-  font-weight: 700; letter-spacing: -0.01em;
-}
+.watch-card.improving { border-left-color: var(--sev-green); }
+.watch-card.flat      { border-left-color: var(--sev-yellow); }
+.watch-card.worsening { border-left-color: var(--sev-red); }
+.watch-card.too_soon  { border-left-color: var(--joby-blue); }
+.watch-card.no_data   { border-left-color: var(--joby-gray); background: var(--bg-card-alt); }
 .watch-card .meta {
   font-size: 11.5px; color: var(--text-secondary); margin-bottom: 10px;
 }
@@ -927,22 +978,17 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
   padding: 3px 10px; border-radius: 3px; margin-right: 10px;
   letter-spacing: 0.5px;
 }
-.verdict-improving { background: var(--sev-green);  color: #FFFFFF; }
+.verdict-improving { background: var(--sev-green);  color: var(--text-inverse); }
 .verdict-flat      { background: var(--sev-yellow); color: var(--joby-off-black); }
-.verdict-worsening { background: var(--sev-red);    color: #FFFFFF; }
-.verdict-too_soon  { background: var(--joby-blue);  color: #FFFFFF; }
+.verdict-worsening { background: var(--sev-red);    color: var(--text-inverse); }
+.verdict-too_soon  { background: var(--joby-blue);  color: var(--text-inverse); }
 .verdict-no_data   { background: var(--joby-gray);  color: var(--joby-off-black); }
 
-.beforeafter {
-  display: flex; gap: 14px; margin: 10px 0;
-  font-size: 12px;
-}
+.beforeafter { display: flex; gap: 14px; margin: 10px 0; font-size: 12px; }
 .beforeafter .ba-block {
-  flex: 1;
-  background: var(--bg-card);
+  flex: 1; background: var(--bg-card-alt);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
+  border-radius: var(--radius-sm); padding: 10px 12px;
 }
 .beforeafter .ba-label {
   font-size: 9.5px; color: var(--text-muted);
@@ -959,29 +1005,31 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
   color: var(--joby-blue); padding: 0 4px;
 }
 
-/* === Tabs ================================================ */
-[data-testid="stTabs"] { border-bottom: 1px solid var(--border-subtle); }
+/* === Tabs === */
+[data-testid="stTabs"] {
+  border-bottom: 1px solid var(--border-subtle);
+}
 [data-testid="stTabs"] [role="tablist"] {
-  gap: 4px; padding-bottom: 0;
-  overflow-x: auto;
+  gap: 4px; padding-bottom: 0; overflow-x: auto;
 }
 [data-testid="stTabs"] [role="tab"] {
-  font-weight: 600; font-size: 13.5px;
-  color: var(--text-secondary);
-  padding: 10px 16px;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  font-weight: 600 !important; font-size: 13.5px !important;
+  color: var(--text-secondary) !important;
+  padding: 11px 18px !important;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0 !important;
   transition: color 150ms ease, background 150ms ease;
 }
 [data-testid="stTabs"] [role="tab"]:hover {
-  color: var(--joby-blue);
-  background: rgba(0, 122, 229, 0.04);
+  color: var(--accent) !important;
+  background: var(--accent-soft) !important;
 }
 [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
-  color: var(--joby-dark-blue-ui);
-  border-bottom: 2px solid var(--joby-blue) !important;
+  color: var(--accent-strong) !important;
+  border-bottom: 2px solid var(--accent) !important;
+  background: transparent !important;
 }
 
-/* === Buttons ============================================= */
+/* === Buttons === */
 .stButton button {
   font-family: 'Inter', sans-serif !important;
   font-weight: 600 !important;
@@ -989,61 +1037,98 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"] {
   transition: all 150ms ease !important;
   border: 1px solid var(--border-default) !important;
   font-size: 13px !important;
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
 }
 .stButton button:hover {
-  border-color: var(--joby-blue) !important;
-  color: var(--joby-blue) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
 }
 .stButton button[kind="primary"] {
-  background: var(--joby-blue) !important;
-  border-color: var(--joby-blue) !important;
-  color: #FFFFFF !important;
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: var(--text-inverse) !important;
 }
 .stButton button[kind="primary"]:hover {
-  background: var(--joby-dark-blue-ui) !important;
-  border-color: var(--joby-dark-blue-ui) !important;
+  background: var(--accent-hover) !important;
+  border-color: var(--accent-hover) !important;
+  color: var(--text-inverse) !important;
+}
+.stButton button:disabled {
+  opacity: 0.5; cursor: not-allowed;
 }
 
-/* === Inputs ============================================= */
+/* === Inputs === */
 .stTextInput input, .stTextArea textarea, .stDateInput input {
   border-radius: var(--radius-sm) !important;
   border-color: var(--border-default) !important;
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
   font-family: 'Inter', sans-serif !important;
 }
-.stTextInput input:focus, .stTextArea textarea:focus {
-  border-color: var(--joby-blue) !important;
-  box-shadow: 0 0 0 2px rgba(0, 122, 229, 0.15) !important;
+.stTextInput input:focus, .stTextArea textarea:focus, .stDateInput input:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(0, 122, 229, 0.18) !important;
+}
+.stTextInput label, .stTextArea label, .stDateInput label,
+.stMultiSelect label, .stSelectbox label, .stRadio label {
+  color: var(--text-primary) !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
 }
 
-/* === Headings ============================================ */
-h1, h2, h3, h4 {
-  color: var(--joby-dark-blue-ui);
-  letter-spacing: -0.015em;
+/* === Multiselect / Selectbox FIX (was rendering with red default chips) === */
+.stMultiSelect [data-baseweb="select"] > div,
+.stSelectbox [data-baseweb="select"] > div {
+  background: var(--bg-card) !important;
+  border-color: var(--border-default) !important;
+  border-radius: var(--radius-sm) !important;
 }
-[data-testid="stMarkdownContainer"] h2,
-[data-testid="stMarkdownContainer"] h3 {
-  font-weight: 700;
+[data-baseweb="tag"] {
+  background: var(--accent) !important;
+  color: var(--text-inverse) !important;
+  border-radius: 3px !important;
+  font-weight: 500 !important;
+}
+[data-baseweb="tag"] span {
+  color: var(--text-inverse) !important;
+}
+[data-baseweb="tag"] svg {
+  fill: var(--text-inverse) !important;
+}
+[data-baseweb="popover"] [role="listbox"] {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border-default) !important;
+}
+[data-baseweb="popover"] [role="option"] {
+  color: var(--text-primary) !important;
+}
+[data-baseweb="popover"] [role="option"]:hover {
+  background: var(--accent-soft) !important;
 }
 
-/* === Captions ============================================ */
+/* === Radio === */
+.stRadio [role="radiogroup"] > label > div:first-child {
+  background: var(--bg-card) !important;
+  border-color: var(--border-default) !important;
+}
+
+/* === Captions === */
 [data-testid="stCaptionContainer"] {
   color: var(--text-muted) !important;
   font-size: 12px !important;
 }
 
-/* === Dividers ============================================ */
-hr {
-  border-color: var(--border-subtle) !important;
-  margin: 20px 0 !important;
-}
+/* === Dividers === */
+hr { border-color: var(--border-subtle) !important; margin: 20px 0 !important; }
 
-/* === Alerts (st.success / st.info / st.warning) ========== */
+/* === Alerts === */
 [data-testid="stAlert"] {
   border-radius: var(--radius-md) !important;
   border: 1px solid var(--border-subtle) !important;
 }
 
-/* === Expanders =========================================== */
+/* === Expanders === */
 [data-testid="stExpander"] {
   border: 1px solid var(--border-subtle) !important;
   border-radius: var(--radius-md) !important;
@@ -1052,27 +1137,62 @@ hr {
   margin-bottom: 8px;
 }
 [data-testid="stExpander"] summary {
-  font-weight: 600;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+}
+[data-testid="stExpander"] [data-testid="stMarkdownContainer"] {
   color: var(--text-primary);
 }
 
-/* === Dataframe =========================================== */
+/* === Dataframe === */
 [data-testid="stDataFrame"] {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   overflow: hidden;
 }
 
-/* === Mobile/tablet responsive ============================ */
+/* === Scrollbars === */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: var(--bg-page); }
+*::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 5px;
+  border: 2px solid var(--bg-page);
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--joby-gray); }
+
+/* === Footer === */
+.app-footer {
+  margin-top: 36px; padding: 14px 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; color: var(--text-muted);
+  box-shadow: var(--shadow-sm);
+}
+.app-footer .left, .app-footer .right { display: flex; align-items: center; gap: 10px; }
+.app-footer .pill {
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-subtle);
+  padding: 2px 8px; border-radius: 3px;
+  font-size: 10px; color: var(--text-secondary);
+}
+
+/* === Mobile/tablet responsive === */
 @media (max-width: 1024px) {
   .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
   .metric-box { min-width: 120px; padding: 10px 12px; }
   .metric-box .val { font-size: 22px; }
+  .cmd-header .live-pill { display: none; }
 }
 @media (max-width: 640px) {
-  .cmd-header { padding: 14px 16px; flex-direction: row; gap: 10px; }
-  .cmd-header h1 { font-size: 18px; }
-  .cmd-header .logo-mark { width: 32px; height: 32px; }
+  .cmd-header { padding: 14px 16px; gap: 10px; }
+  .cmd-header h1 { font-size: 17px; }
+  .cmd-header .logo-mark { width: 36px; height: 36px; }
+  .cmd-header .logo-mark img { width: 24px; }
   .metric-row { gap: 6px; }
   .metric-box { min-width: calc(50% - 4px); padding: 9px 11px; }
   .metric-box .val { font-size: 19px; }
@@ -1081,31 +1201,112 @@ hr {
   .section-header { font-size: 11px; padding: 8px 12px; }
   .beforeafter { flex-direction: column; gap: 8px; }
   .beforeafter .ba-arrow { transform: rotate(90deg); align-self: flex-start; }
+  .app-footer { flex-direction: column; gap: 6px; align-items: flex-start; }
 }
 </style>
-""", unsafe_allow_html=True)
+"""
+
+DARK_OVERRIDE_CSS = """
+<style>
+:root {
+  --bg-page:           #0A1118;
+  --bg-card:           #131C26;
+  --bg-card-alt:       #1A2330;
+  --bg-inset:          #232C3A;
+  --bg-elevated:       #1E2834;
+  --border-subtle:     #232C3A;
+  --border-default:    #34404E;
+  --border-strong:     #485668;
+
+  --text-primary:      #F5F4DF;
+  --text-secondary:    #C8CDD3;
+  --text-muted:        #8B95A3;
+  --text-faint:        #5C6470;
+  --text-inverse:      #FFFFFF;
+
+  --accent:            #4DA3FF;
+  --accent-hover:      #7CC3FF;
+  --accent-soft:       rgba(77, 163, 255, 0.12);
+  --accent-strong:     #7CC3FF;
+
+  --header-bg-start:   #061B30;
+  --header-bg-end:     #0F2A52;
+  --header-text:       #F5F4DF;
+  --header-sub:        #7CC3FF;
+
+  --section-bg:        #0F2A52;
+  --section-text:      #F5F4DF;
+
+  --sev-red:        #E74C3C;
+  --sev-red-bg:     #2E1714;
+  --sev-orange:     #F08530;
+  --sev-orange-bg:  #2E1F12;
+  --sev-yellow:     #F0B530;
+  --sev-yellow-bg:  #2E2614;
+  --sev-green:      #2DC18A;
+  --sev-green-bg:   #142A22;
+
+  --shadow-sm:  0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md:  0 2px 4px rgba(0, 0, 0, 0.4), 0 4px 8px rgba(0, 0, 0, 0.3);
+  --shadow-lg:  0 4px 12px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.3);
+
+  --grid-color: #232C3A;
+}
+[data-testid="stHeader"] { background: var(--bg-page) !important; }
+.alert-card .meta b { color: var(--text-primary); }
+[data-baseweb="popover"] [role="listbox"] { background: var(--bg-card) !important; }
+.stTextInput input, .stTextArea textarea, .stDateInput input {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+}
+</style>
+"""
+
+# ============================================================
+# UI START
+# ============================================================
+
+st.markdown(BASE_CSS, unsafe_allow_html=True)
+if st.session_state.theme == "dark":
+    st.markdown(DARK_OVERRIDE_CSS, unsafe_allow_html=True)
 
 now_pt = datetime.now(timezone.utc) + timedelta(hours=-7)
 ts_str = now_pt.strftime("%a %b %-d, %Y · %-I:%M %p PT")
 
+# Header with real logo
+logo_b64 = load_logo_b64()
+if logo_b64:
+    logo_html = '<img src="data:image/png;base64,' + logo_b64 + '" alt="Joby"/>'
+else:
+    logo_html = '<span class="fallback">🛠️</span>'
+
 st.markdown(
     '<div class="cmd-header">'
-    '<div class="logo-mark">🛠️</div>'
-    '<div class="titles">'
-    '<h1>Production Lead Command Center</h1>'
-    '<div class="sub">Hand Layup · Quality Watch · ' + ts_str + '</div>'
-    '</div>'
-    '</div>',
+    + '<div class="logo-mark">' + logo_html + '</div>'
+    + '<div class="titles">'
+    + '<h1>Production Lead Command Center</h1>'
+    + '<div class="sub">Hand Layup · 527 Lamination · ' + ts_str + '</div>'
+    + '</div>'
+    + '<div class="live-pill"><span class="live-dot"></span>LIVE · cached 5min</div>'
+    + '</div>',
     unsafe_allow_html=True,
 )
 
 # Sidebar
 with st.sidebar:
     st.subheader("Controls")
+
     if st.button("🔄 Refresh data", use_container_width=True, type="primary"):
         st.cache_data.clear()
         st.rerun()
     st.caption("Cached for 5 min. Hit refresh to re-pull from Databricks.")
+
+    # Theme toggle
+    theme_label = "🌙 Switch to dark mode" if st.session_state.theme == "light" else "☀️ Switch to light mode"
+    if st.button(theme_label, use_container_width=True):
+        st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
+        st.rerun()
+
     st.divider()
     st.caption("**Severity rules**")
     st.caption("🔴 RED — 2+ scraps OR 3+ wrinkles")
@@ -1157,7 +1358,7 @@ def render_kpi_card(label, value, delta_text=None, delta_color=None, sub=None, v
         val_style = ' style="color:' + str(val_color) + ';"'
     delta_html = ""
     if delta_text:
-        delta_html = '<div class="delta" style="color:' + str(delta_color or "#6B7280") + ';">' + str(delta_text) + '</div>'
+        delta_html = '<div class="delta" style="color:' + str(delta_color or "var(--text-muted)") + ';">' + str(delta_text) + '</div>'
     sub_html = ""
     if sub:
         sub_html = '<div class="sub">' + str(sub) + '</div>'
@@ -1165,8 +1366,7 @@ def render_kpi_card(label, value, delta_text=None, delta_color=None, sub=None, v
         '<div class="metric-box">'
         + '<div class="label">' + str(label) + '</div>'
         + '<div class="val"' + val_style + '>' + str(value) + '</div>'
-        + delta_html
-        + sub_html
+        + delta_html + sub_html
         + '</div>'
     )
 
@@ -1188,10 +1388,10 @@ st.markdown(
     '<div class="sticky-metrics">'
     + kpi_row_html([
         {"label": "Pipeline parts", "value": len(scored)},
-        {"label": "🔴 Red",    "value": red,    "val_color": "#C0392B"},
-        {"label": "🟠 Orange", "value": orange, "val_color": "#D4730B"},
-        {"label": "🟡 Yellow", "value": yellow, "val_color": "#D4920B"},
-        {"label": "🟢 Clean",  "value": clean,  "val_color": "#1D9E75"},
+        {"label": "🔴 Red",    "value": red,    "val_color": "var(--sev-red)"},
+        {"label": "🟠 Orange", "value": orange, "val_color": "var(--sev-orange)"},
+        {"label": "🟡 Yellow", "value": yellow, "val_color": "var(--sev-yellow)"},
+        {"label": "🟢 Clean",  "value": clean,  "val_color": "var(--sev-green)"},
     ])
     + '</div>',
     unsafe_allow_html=True,
@@ -1263,11 +1463,10 @@ def render_alert(row, show_history=True, max_history=5):
 
 def filter_and_sort(df, stages):
     sub = df[df["stage"].isin(stages)].copy()
-    sub = sub.sort_values(
+    return sub.sort_values(
         ["sev_rank", "scrap_count", "wrinkle_count", "issue_count"],
         ascending=[True, False, False, False],
     )
-    return sub
 
 
 def render_delta_line(row, suffix=""):
@@ -1279,12 +1478,31 @@ def render_delta_line(row, suffix=""):
     return (
         '<div class="delta-line">'
         + '<span style="color:' + sev_color + ';font-weight:700;">' + sev + '</span> '
-        + '<b>' + summary + '</b>'
-        + suffix
-        + ' <span style="color:#6B7280;font-size:11px;">('
+        + '<b>' + summary + '</b>' + suffix
+        + ' <span style="color:var(--text-muted);font-size:11px;">('
         + me + ' · MFID-' + str(mfid) + ')</span>'
         + '</div>'
     )
+
+
+# Plotly theme — adapts to current theme
+if st.session_state.theme == "dark":
+    PLOTLY_LAYOUT = dict(
+        font=dict(family="Inter, sans-serif", color="#F5F4DF"),
+        paper_bgcolor="#131C26", plot_bgcolor="#131C26",
+        xaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E"),
+        yaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E"),
+    )
+    PLOTLY_NEUTRAL = "#485668"
+    PLOTLY_ACCENT = "#4DA3FF"
+else:
+    PLOTLY_LAYOUT = dict(
+        font=dict(family="Inter, sans-serif", color="#0E1620"),
+        paper_bgcolor="white", plot_bgcolor="white",
+        xaxis=dict(gridcolor="#F0EFE5"), yaxis=dict(gridcolor="#F0EFE5"),
+    )
+    PLOTLY_NEUTRAL = "#CDD0D1"
+    PLOTLY_ACCENT = "#007AE5"
 
 
 # ============================================================
@@ -1301,7 +1519,6 @@ tab_floor, tab_next, tab_up, tab_search, tab_improve, tab_export, tab_analytics 
     "📊 Analytics",
 ])
 
-# ---------- IN LAYUP ----------
 with tab_floor:
     st.subheader("In Layup")
     st.caption("Parts in **Layup** — what to check during your walk")
@@ -1315,7 +1532,6 @@ with tab_floor:
             render_alert(row)
 
 
-# ---------- READY TO LAYUP ----------
 with tab_next:
     st.subheader("Ready to Layup")
     st.caption("Parts about to hit the tool — plan before they start")
@@ -1329,7 +1545,6 @@ with tab_next:
             render_alert(row)
 
 
-# ---------- UPSTREAM ----------
 with tab_up:
     st.subheader("Upstream")
     st.caption("Material Cutting + Scheduled — flag before they arrive")
@@ -1343,7 +1558,6 @@ with tab_up:
             render_alert(row, show_history=False)
 
 
-# ---------- SEARCH ----------
 with tab_search:
     st.subheader("Search any part")
     q = st.text_input(
@@ -1388,9 +1602,7 @@ with tab_search:
         st.info("Start typing to search.")
 
 
-# ============================================================
-# IMPROVEMENT TRACKER TAB
-# ============================================================
+# ---------- IMPROVEMENT TRACKER ----------
 with tab_improve:
     st.subheader("🎯 Improvement Tracker")
     st.caption("Watch risk parts. Log corrective actions. Verify if they actually worked.")
@@ -1424,7 +1636,6 @@ with tab_improve:
                 })
 
     st.markdown('<div class="section-header">ADD A PART TO WATCH</div>', unsafe_allow_html=True)
-
     add_q = st.text_input(
         "Search by part name or part number to add",
         placeholder="e.g. forward floor bracket   |   216159-001",
@@ -1433,8 +1644,7 @@ with tab_improve:
     if add_q:
         ql = add_q.lower().strip()
         matches = [u for u in search_universe
-                   if ql in u["pn_norm"].lower() or ql in u["pn_raw"].lower() or ql in u["summary"].lower()]
-        matches = matches[:8]
+                   if ql in u["pn_norm"].lower() or ql in u["pn_raw"].lower() or ql in u["summary"].lower()][:8]
         if matches:
             st.caption("Matches — click to add")
             for u in matches:
@@ -1446,24 +1656,21 @@ with tab_improve:
                     if u["severity"] in SEV_COLOR:
                         sev_tag = (' <span style="color:' + SEV_COLOR[u["severity"]]
                                    + ';font-weight:700;font-size:11px;">' + u["severity"] + '</span>')
-                    listed = " <span style='color:#1D9E75;font-size:11px;'>· on watchlist</span>" if on_list else ""
+                    listed = " <span style='color:var(--sev-green);font-size:11px;'>· on watchlist</span>" if on_list else ""
                     st.markdown(
-                        '<div style="font-size:13px;">'
+                        '<div style="font-size:13px;color:var(--text-primary);">'
                         + '<b>' + u["summary"][:80] + '</b>' + pipe_tag + sev_tag + listed
-                        + '<br/><span style="color:#6B7280;font-size:11px;font-family:JetBrains Mono,monospace;">' + u["pn_raw"] + '</span>'
+                        + '<br/><span style="color:var(--text-muted);font-size:11px;font-family:JetBrains Mono,monospace;">' + u["pn_raw"] + '</span>'
                         + '</div>',
                         unsafe_allow_html=True,
                     )
                 with col_b:
                     pass
                 with col_c:
-                    btn_key = "add_" + u["pn_norm"]
-                    if st.button("➕ Watch", key=btn_key, disabled=on_list, use_container_width=True):
+                    if st.button("➕ Watch", key="add_" + u["pn_norm"], disabled=on_list, use_container_width=True):
                         try:
                             msg = add_to_watchlist(u["pn_norm"], u["pn_raw"], u["summary"])
-                            st.cache_data.clear()
-                            st.success(msg + " — refreshing…")
-                            st.rerun()
+                            st.cache_data.clear(); st.success(msg + " — refreshing…"); st.rerun()
                         except Exception as e:
                             st.error("Add failed: " + str(e))
         else:
@@ -1475,46 +1682,36 @@ with tab_improve:
     if active_wl.empty:
         st.info("Nothing on the watchlist yet. Add a part above to start tracking.")
     else:
-        verdict_label = {
-            "improving": "✅ IMPROVING", "flat": "⚠️ FLAT",
-            "worsening": "🔴 WORSENING", "too_soon": "⏳ TOO SOON",
-            "no_data": "— NO DATA",
-        }
-        verdict_class = {
-            "improving": "verdict-improving", "flat": "verdict-flat",
-            "worsening": "verdict-worsening", "too_soon": "verdict-too_soon",
-            "no_data": "verdict-no_data",
-        }
-        card_class = {
-            "improving": "improving", "flat": "flat",
-            "worsening": "worsening", "too_soon": "too_soon",
-            "no_data": "no_data",
-        }
+        verdict_label = {"improving": "✅ IMPROVING", "flat": "⚠️ FLAT",
+                         "worsening": "🔴 WORSENING", "too_soon": "⏳ TOO SOON",
+                         "no_data": "— NO DATA"}
+        verdict_class = {"improving": "verdict-improving", "flat": "verdict-flat",
+                         "worsening": "verdict-worsening", "too_soon": "verdict-too_soon",
+                         "no_data": "verdict-no_data"}
+        card_class = {"improving": "improving", "flat": "flat",
+                      "worsening": "worsening", "too_soon": "too_soon",
+                      "no_data": "no_data"}
 
         for _, w in active_wl.iterrows():
             pn = w["pn_norm"]
             intv = w["intervention_date"]
             intv_dt = pd.to_datetime(intv).date() if pd.notna(intv) else None
-
             comp = compute_improvement(quality_df, pn, intv_dt)
 
             pipe_match = scored[scored["pn_norm"] == pn]
             in_pipeline = not pipe_match.empty
             cur_stage = pipe_match.iloc[0]["stage"] if in_pipeline else "—"
             cur_sev = pipe_match.iloc[0]["severity"] if in_pipeline else "—"
-            cur_sev_color = SEV_COLOR.get(cur_sev, "#6B7280")
+            cur_sev_color = SEV_COLOR.get(cur_sev, "var(--text-muted)")
 
             v = comp["verdict"]
             vc = card_class.get(v, "no_data")
             vlabel = verdict_label.get(v, "—")
             vclass = verdict_class.get(v, "verdict-no_data")
 
-            intv_line = ""
             if intv_dt is not None:
-                intv_line = (
-                    "Intervention <b>" + intv_dt.strftime("%-m/%-d") + "</b> ("
-                    + str(comp["days_after"]) + " days ago)"
-                )
+                intv_line = ("Intervention <b>" + intv_dt.strftime("%-m/%-d") + "</b> ("
+                             + str(comp["days_after"]) + " days ago)")
                 if w.get("intervention_note"):
                     intv_line += " — " + str(w.get("intervention_note"))[:120]
             else:
@@ -1537,23 +1734,19 @@ with tab_improve:
                 + '</div>'
             )
 
-            pipe_tag = ""
             if in_pipeline:
-                pipe_tag = (
-                    ' <span style="color:' + cur_sev_color + ';font-weight:700;font-size:11px;">'
-                    + cur_sev + '</span> in <b>' + cur_stage + '</b>'
-                )
+                pipe_tag = (' <span style="color:' + cur_sev_color
+                            + ';font-weight:700;font-size:11px;">' + cur_sev
+                            + '</span> in <b>' + cur_stage + '</b>')
             else:
-                pipe_tag = ' <span style="color:#9CA3AF;font-size:11px;">not currently in pipeline</span>'
+                pipe_tag = ' <span style="color:var(--text-faint);font-size:11px;">not currently in pipeline</span>'
 
             card_html = (
                 '<div class="watch-card ' + vc + '">'
                 + '<span class="verdict ' + vclass + '">' + vlabel + '</span>'
-                + '<b>' + (w.get("summary") or "")[:90] + '</b>' + pipe_tag
-                + '<div class="meta">' + intv_line + ' · '
-                + str(w.get("pn_raw") or "") + '</div>'
-                + ba_html
-                + '</div>'
+                + '<b style="color:var(--text-primary);">' + (w.get("summary") or "")[:90] + '</b>' + pipe_tag
+                + '<div class="meta">' + intv_line + ' · ' + str(w.get("pn_raw") or "") + '</div>'
+                + ba_html + '</div>'
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
@@ -1577,9 +1770,7 @@ with tab_improve:
                     if st.button("💾 Save", key="save_" + pn, use_container_width=True):
                         try:
                             update_intervention(pn, new_intv, new_note or None)
-                            st.cache_data.clear()
-                            st.success("Saved.")
-                            st.rerun()
+                            st.cache_data.clear(); st.success("Saved."); st.rerun()
                         except Exception as e:
                             st.error("Save failed: " + str(e))
 
@@ -1623,27 +1814,21 @@ with tab_improve:
                     ).reset_index()
                     if HAS_PLOTLY and not wk.empty:
                         fig = go.Figure()
-                        fig.add_trace(go.Bar(x=wk["week"], y=wk["issues"],
-                            name="Issues", marker_color="#9CA3AF",
+                        fig.add_trace(go.Bar(x=wk["week"], y=wk["issues"], name="Issues",
+                            marker_color=PLOTLY_NEUTRAL,
                             hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>"))
-                        fig.add_trace(go.Bar(x=wk["week"], y=wk["scraps"],
-                            name="Scraps", marker_color="#C0392B",
+                        fig.add_trace(go.Bar(x=wk["week"], y=wk["scraps"], name="Scraps",
+                            marker_color="#C0392B",
                             hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>"))
                         if intv_dt is not None:
-                            fig.add_vline(
-                                x=pd.Timestamp(intv_dt),
-                                line_dash="dash", line_color="#007AE5",
-                                annotation_text="Intervention",
-                                annotation_position="top",
-                            )
-                        fig.update_layout(
-                            barmode="overlay", height=200,
+                            fig.add_vline(x=pd.Timestamp(intv_dt),
+                                line_dash="dash", line_color=PLOTLY_ACCENT,
+                                annotation_text="Intervention", annotation_position="top")
+                        fig.update_layout(barmode="overlay", height=200,
                             margin=dict(l=20, r=20, t=20, b=20),
                             legend=dict(orientation="h", y=1.05, x=0),
-                            font=dict(family="Inter, sans-serif"),
-                            paper_bgcolor="white", plot_bgcolor="white",
                             xaxis_title=None, yaxis_title=None,
-                        )
+                            **PLOTLY_LAYOUT)
                         st.plotly_chart(fig, use_container_width=True)
                     else:
                         st.bar_chart(wk.set_index("week")[["issues", "scraps"]], height=180)
@@ -1653,26 +1838,23 @@ with tab_improve:
     if not closed_wl.empty:
         with st.expander("📚 Closed cases · " + str(len(closed_wl)) + " resolved", expanded=False):
             for _, w in closed_wl.iterrows():
-                status_lbl = {
-                    "closed_success": "✅ Success",
-                    "closed_fail":    "🔴 Fail",
-                    "closed_other":   "⚪ Other",
-                }.get(w["status"], w["status"])
+                status_lbl = {"closed_success": "✅ Success",
+                              "closed_fail": "🔴 Fail",
+                              "closed_other": "⚪ Other"}.get(w["status"], w["status"])
                 cd = pd.to_datetime(w["closed_date"]).date() if pd.notna(w["closed_date"]) else None
                 cd_str = cd.strftime("%-m/%-d/%y") if cd else "?"
                 note = (w.get("close_note") or w.get("intervention_note") or "—")[:140]
                 st.markdown(
-                    '<div style="padding:8px 12px;background:#F7F7F2;border:1px solid #E8E6D8;border-radius:6px;margin-bottom:6px;font-size:12px;">'
+                    '<div style="padding:8px 12px;background:var(--bg-card-alt);border:1px solid var(--border-subtle);border-radius:6px;margin-bottom:6px;font-size:12px;color:var(--text-primary);">'
                     + '<b>' + status_lbl + '</b> · ' + cd_str + ' · '
                     + '<b>' + (w.get("summary") or "")[:80] + '</b> '
-                    + '<span style="color:#6B7280;font-family:JetBrains Mono,monospace;">(' + str(w.get("pn_raw") or "") + ')</span>'
-                    + '<br/><span style="color:#4A5568;font-size:11px;">' + note + '</span>'
+                    + '<span style="color:var(--text-muted);font-family:JetBrains Mono,monospace;">(' + str(w.get("pn_raw") or "") + ')</span>'
+                    + '<br/><span style="color:var(--text-secondary);font-size:11px;">' + note + '</span>'
                     + '</div>',
                     unsafe_allow_html=True,
                 )
 
 
-# ---------- EXPORT ----------
 with tab_export:
     st.subheader("Export")
     st.caption("Download the current snapshot as CSV or PDF")
@@ -1699,9 +1881,7 @@ with tab_export:
         st.success("PDF ready: **" + fname + "**")
 
 
-# ============================================================
-# ANALYTICS TAB
-# ============================================================
+# ---------- ANALYTICS ----------
 with tab_analytics:
     st.subheader("📊 Quality & Productivity Analytics")
     st.caption("Trend, breakdowns, KPIs, and shift-over-shift changes — all filterable.")
@@ -1719,9 +1899,8 @@ with tab_analytics:
 
     window_days_map = {"7d": 7, "30d": 30, "90d": 90, "6mo": 180}
     window_days = window_days_map[date_range]
-    period_label_map = {"7d": "last 7 days", "30d": "last 30 days",
-                        "90d": "last 90 days", "6mo": "last 6 months"}
-    period_label = period_label_map[date_range]
+    period_label = {"7d": "last 7 days", "30d": "last 30 days",
+                    "90d": "last 90 days", "6mo": "last 6 months"}[date_range]
 
     q_filtered = quality_df.copy()
     if area_filter:
@@ -1739,11 +1918,8 @@ with tab_analytics:
     kpi_curr = compute_kpis(q_curr)
     kpi_prior = compute_kpis(q_prior)
 
-    st.markdown(
-        '<div class="section-header">QUALITY KPIs · ' + period_label.upper()
-        + ' vs prior ' + period_label + '</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="section-header">QUALITY KPIs · ' + period_label.upper()
+                + ' vs prior ' + period_label + '</div>', unsafe_allow_html=True)
 
     issues_d, issues_c = fmt_delta(kpi_curr["issues"], kpi_prior["issues"])
     scrap_d,  scrap_c  = fmt_delta(kpi_curr["scraps"], kpi_prior["scraps"])
@@ -1752,26 +1928,25 @@ with tab_analytics:
     pend_d,   pend_c   = fmt_delta(kpi_curr["pending"], kpi_prior["pending"])
     rate_d,   rate_c   = fmt_delta(kpi_curr["scrap_rate"], kpi_prior["scrap_rate"])
 
-    quality_cards = [
+    st.markdown(kpi_row_html([
         {"label": "Total issues", "value": kpi_curr["issues"],
          "delta_text": issues_d, "delta_color": issues_c, "sub": "prior: " + str(kpi_prior["issues"])},
         {"label": "Scraps", "value": kpi_curr["scraps"],
          "delta_text": scrap_d, "delta_color": scrap_c,
-         "sub": "prior: " + str(kpi_prior["scraps"]), "val_color": "#C0392B"},
+         "sub": "prior: " + str(kpi_prior["scraps"]), "val_color": "var(--sev-red)"},
         {"label": "Wrinkles", "value": kpi_curr["wrinkles"],
          "delta_text": wrkl_d, "delta_color": wrkl_c,
-         "sub": "prior: " + str(kpi_prior["wrinkles"]), "val_color": "#D4730B"},
+         "sub": "prior: " + str(kpi_prior["wrinkles"]), "val_color": "var(--sev-orange)"},
         {"label": "Rework", "value": kpi_curr["rework"],
          "delta_text": rework_d, "delta_color": rework_c,
-         "sub": "prior: " + str(kpi_prior["rework"]), "val_color": "#D4920B"},
+         "sub": "prior: " + str(kpi_prior["rework"]), "val_color": "var(--sev-yellow)"},
         {"label": "Pending", "value": kpi_curr["pending"],
          "delta_text": pend_d, "delta_color": pend_c,
-         "sub": "prior: " + str(kpi_prior["pending"]), "val_color": "#7C2D12"},
+         "sub": "prior: " + str(kpi_prior["pending"])},
         {"label": "Scrap rate", "value": str(int(round(kpi_curr["scrap_rate"]))) + "%",
          "delta_text": rate_d, "delta_color": rate_c,
          "sub": "prior: " + str(int(round(kpi_prior["scrap_rate"]))) + "%"},
-    ]
-    st.markdown(kpi_row_html(quality_cards), unsafe_allow_html=True)
+    ]), unsafe_allow_html=True)
 
     st.markdown('<div class="section-header">PRODUCTIVITY KPIs · pipeline state right now</div>',
                 unsafe_allow_html=True)
@@ -1794,17 +1969,15 @@ with tab_analytics:
 
     flagged_pct = int(round(100 * (red + orange + yellow) / max(1, len(scored))))
 
-    prod_cards = [
+    st.markdown(kpi_row_html([
         {"label": "Active pipeline", "value": len(scored), "sub": "all stages"},
         {"label": "In Layup", "value": in_layup_n, "sub": "on the table"},
         {"label": "Ready to Layup", "value": in_ready_n, "sub": "queued"},
         {"label": "Material Cutting", "value": in_mc_n, "sub": "kit prep"},
-        {"label": "Median age in Ready", "value": str(avg_dwell) + "d",
-         "sub": "max: " + str(max_dwell) + "d"},
+        {"label": "Median age in Ready", "value": str(avg_dwell) + "d", "sub": "max: " + str(max_dwell) + "d"},
         {"label": "Flagged %", "value": str(flagged_pct) + "%",
          "sub": str(red + orange + yellow) + " of " + str(len(scored))},
-    ]
-    st.markdown(kpi_row_html(prod_cards), unsafe_allow_html=True)
+    ]), unsafe_allow_html=True)
 
     st.markdown('<div class="section-header">WRINKLE ARTS GOAL · 50% reduction target</div>',
                 unsafe_allow_html=True)
@@ -1812,8 +1985,7 @@ with tab_analytics:
     wrinkles_only = q_filtered[q_filtered["is_wrinkle"] == 1].copy()
     if not wrinkles_only.empty:
         wrinkles_only["week"] = wrinkles_only["created_dt"].dt.to_period("W").dt.start_time
-        weekly = wrinkles_only.groupby("week").size().reset_index(name="count")
-        weekly = weekly.sort_values("week").tail(12)
+        weekly = wrinkles_only.groupby("week").size().reset_index(name="count").sort_values("week").tail(12)
 
         if len(weekly) >= 8:
             baseline_wk = int(weekly.head(4)["count"].sum())
@@ -1831,37 +2003,26 @@ with tab_analytics:
                 status_text = "🔴 GETTING WORSE"; status_class = "off-pace"; fill_class = "bad"
 
             change_pct = 100 * (current_wk - baseline_wk) / max(1, baseline_wk)
-            change_sign = "+" if change_pct > 0 else ""
-            change_str = change_sign + str(int(round(change_pct))) + "%"
+            change_str = ("+" if change_pct > 0 else "") + str(int(round(change_pct))) + "%"
 
-            goal_html = (
+            st.markdown(
                 '<div class="goal-card ' + status_class + '">'
                 + '<h3>' + status_text + '</h3>'
-                + '<div style="display:flex;justify-content:space-between;font-size:13px;color:#4A5568;margin-bottom:6px;flex-wrap:wrap;gap:8px;">'
+                + '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text-secondary);margin-bottom:6px;flex-wrap:wrap;gap:8px;">'
                 + '<span><b>Baseline (first 4 weeks):</b> <span style="font-family:JetBrains Mono,monospace;">' + str(baseline_wk) + '</span> wrinkles</span>'
                 + '<span><b>Last 4 weeks:</b> <span style="font-family:JetBrains Mono,monospace;">' + str(current_wk) + '</span> wrinkles (' + change_str + ')</span>'
                 + '<span><b>Target:</b> <span style="font-family:JetBrains Mono,monospace;">≤ ' + str(int(target)) + '</span></span>'
                 + '</div>'
-                + '<div class="progress">'
-                + '<div class="progress-fill ' + fill_class + '" style="width:' + str(int(round(pct_to_goal))) + '%;"></div>'
-                + '</div>'
-                + '<div style="font-size:11px;color:#6B7280;text-align:right;font-family:JetBrains Mono,monospace;">'
-                + str(int(round(pct_to_goal))) + '% of the way to goal'
-                + '</div>'
-                + '</div>'
+                + '<div class="progress"><div class="progress-fill ' + fill_class + '" style="width:' + str(int(round(pct_to_goal))) + '%;"></div></div>'
+                + '<div style="font-size:11px;color:var(--text-muted);text-align:right;font-family:JetBrains Mono,monospace;">'
+                + str(int(round(pct_to_goal))) + '% of the way to goal</div>'
+                + '</div>',
+                unsafe_allow_html=True,
             )
-            st.markdown(goal_html, unsafe_allow_html=True)
         else:
             st.info("Not enough wrinkle history yet for ARTS goal tracking (need 8+ weeks).")
     else:
         st.info("No wrinkle data in selected window.")
-
-    # Plotly default theme override
-    PLOTLY_LAYOUT = dict(
-        font=dict(family="Inter, sans-serif", color="#0E1620"),
-        paper_bgcolor="white", plot_bgcolor="white",
-        xaxis=dict(gridcolor="#F0EFE5"), yaxis=dict(gridcolor="#F0EFE5"),
-    )
 
     st.markdown('<div class="section-header">WEEKLY ISSUE & SCRAP TREND · last 12 weeks</div>',
                 unsafe_allow_html=True)
@@ -1877,31 +2038,26 @@ with tab_analytics:
 
         if HAS_PLOTLY and not weekly_agg.empty:
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["issues"],
-                name="Total issues", marker_color="#CDD0D1",
+            fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["issues"], name="Total issues",
+                marker_color=PLOTLY_NEUTRAL,
                 hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>"))
-            fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["scraps"],
-                name="Scraps", marker_color="#C0392B",
+            fig.add_trace(go.Bar(x=weekly_agg["week"], y=weekly_agg["scraps"], name="Scraps",
+                marker_color="#C0392B",
                 hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>"))
-            fig.add_trace(go.Scatter(x=weekly_agg["week"], y=weekly_agg["wrinkles"],
-                name="Wrinkles", mode="lines+markers",
-                line=dict(color="#D4730B", width=3),
+            fig.add_trace(go.Scatter(x=weekly_agg["week"], y=weekly_agg["wrinkles"], name="Wrinkles",
+                mode="lines+markers", line=dict(color="#D4730B", width=3),
                 hovertemplate="%{x|%b %d}<br>%{y} wrinkles<extra></extra>"))
-            fig.update_layout(
-                barmode="overlay", height=320,
+            fig.update_layout(barmode="overlay", height=320,
                 margin=dict(l=20, r=20, t=10, b=20),
                 legend=dict(orientation="h", y=1.05, x=0),
                 hovermode="x unified",
                 xaxis_title=None, yaxis_title="Count",
-                **PLOTLY_LAYOUT,
-            )
+                **PLOTLY_LAYOUT)
             st.plotly_chart(fig, use_container_width=True)
         elif not weekly_agg.empty:
-            chart_data = weekly_agg.set_index("week")[["issues", "scraps", "wrinkles"]]
-            st.bar_chart(chart_data, height=260)
+            st.bar_chart(weekly_agg.set_index("week")[["issues", "scraps", "wrinkles"]], height=260)
 
-    st.markdown('<div class="section-header">DAILY ACTIVITY · last 30 days</div>',
-                unsafe_allow_html=True)
+    st.markdown('<div class="section-header">DAILY ACTIVITY · last 30 days</div>', unsafe_allow_html=True)
 
     daily_window = filter_quality_by_window(q_filtered, 30)
     if not daily_window.empty:
@@ -1913,11 +2069,11 @@ with tab_analytics:
 
         if HAS_PLOTLY:
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=daily["created_date"], y=daily["issues"],
-                name="Issues", marker_color="#007AE5",
+            fig.add_trace(go.Bar(x=daily["created_date"], y=daily["issues"], name="Issues",
+                marker_color=PLOTLY_ACCENT,
                 hovertemplate="%{x|%b %d}<br>%{y} issues<extra></extra>"))
-            fig.add_trace(go.Bar(x=daily["created_date"], y=daily["scraps"],
-                name="Scraps", marker_color="#C0392B",
+            fig.add_trace(go.Bar(x=daily["created_date"], y=daily["scraps"], name="Scraps",
+                marker_color="#C0392B",
                 hovertemplate="%{x|%b %d}<br>%{y} scraps<extra></extra>"))
             fig.update_layout(barmode="group", height=260,
                 margin=dict(l=20, r=20, t=10, b=20),
@@ -1952,7 +2108,7 @@ with tab_analytics:
             if HAS_PLOTLY and not cat_agg.empty:
                 fig = go.Figure()
                 fig.add_trace(go.Bar(y=cat_agg["category"], x=cat_agg["total"],
-                    orientation="h", name="Total", marker_color="#CDD0D1",
+                    orientation="h", name="Total", marker_color=PLOTLY_NEUTRAL,
                     hovertemplate="%{y}<br>%{x} total<extra></extra>"))
                 fig.add_trace(go.Bar(y=cat_agg["category"], x=cat_agg["scraps"],
                     orientation="h", name="Scraps", marker_color="#C0392B",
@@ -1976,13 +2132,12 @@ with tab_analytics:
                 scraps=("disposition", lambda s: int((s == "Scrap").sum())),
             ).reset_index().sort_values("total", ascending=True)
             det["area_short"] = det["originating_area"].str.replace(
-                "Manufacturing Engineering - Composites Fabrication", "ME-Comp Fab"
-            )
+                "Manufacturing Engineering - Composites Fabrication", "ME-Comp Fab")
 
             if HAS_PLOTLY and not det.empty:
                 fig = go.Figure()
                 fig.add_trace(go.Bar(y=det["area_short"], x=det["total"],
-                    orientation="h", name="Total", marker_color="#007AE5",
+                    orientation="h", name="Total", marker_color=PLOTLY_ACCENT,
                     hovertemplate="%{y}<br>%{x} issues<extra></extra>"))
                 fig.add_trace(go.Bar(y=det["area_short"], x=det["scraps"],
                     orientation="h", name="Scraps", marker_color="#C0392B",
@@ -2004,15 +2159,13 @@ with tab_analytics:
     dow_window = filter_quality_by_window(q_filtered, 90)
     wnk_dow = dow_window[dow_window["is_wrinkle"] == 1].copy()
     if not wnk_dow.empty:
-        dow_agg = wnk_dow.groupby(["dow_n", "dow"]).size().reset_index(name="count")
-        dow_agg = dow_agg.sort_values("dow_n")
+        dow_agg = wnk_dow.groupby(["dow_n", "dow"]).size().reset_index(name="count").sort_values("dow_n")
         if HAS_PLOTLY and not dow_agg.empty:
             fig = px.bar(dow_agg, x="dow", y="count",
                 color="count", color_continuous_scale="Reds",
                 labels={"dow": "Day", "count": "Wrinkles"})
             fig.update_layout(height=240, margin=dict(l=20, r=20, t=10, b=20),
-                showlegend=False, coloraxis_showscale=False,
-                **PLOTLY_LAYOUT)
+                showlegend=False, coloraxis_showscale=False, **PLOTLY_LAYOUT)
             st.plotly_chart(fig, use_container_width=True)
         elif not dow_agg.empty:
             st.bar_chart(dow_agg.set_index("dow")[["count"]], height=220)
@@ -2063,8 +2216,9 @@ with tab_analytics:
     pivot = pivot.reindex(index=sev_order, fill_value=0)
 
     if HAS_PLOTLY and not pivot.empty:
+        bg_for_zero = "#131C26" if st.session_state.theme == "dark" else "#FAFAF6"
         fig = px.imshow(pivot.values, x=pivot.columns.tolist(), y=pivot.index.tolist(),
-            color_continuous_scale=[[0, "#FAFAF6"], [1, "#C0392B"]],
+            color_continuous_scale=[[0, bg_for_zero], [1, "#C0392B"]],
             text_auto=True, aspect="auto")
         fig.update_layout(height=240, margin=dict(l=20, r=20, t=10, b=20),
             coloraxis_showscale=False, xaxis_title=None, yaxis_title=None,
@@ -2073,8 +2227,7 @@ with tab_analytics:
     else:
         st.dataframe(pivot, use_container_width=True)
 
-    st.markdown('<div class="section-header">WHAT CHANGED · since prior shift</div>',
-                unsafe_allow_html=True)
+    st.markdown('<div class="section-header">WHAT CHANGED · since prior shift</div>', unsafe_allow_html=True)
 
     prior = load_prior_snapshot(now_pt)
     if prior.empty:
@@ -2095,12 +2248,11 @@ with tab_analytics:
         total_changes = n_new + n_gone + n_stage + n_scrap + n_wnk + n_up + n_down
 
         plural = "s" if total_changes != 1 else ""
-        summary_html = (
+        st.markdown(
             '<div class="delta-summary">'
             + '<h3>Comparing to: ' + str(prior_date) + ' ' + str(prior_shift_lbl)
             + ' (' + prior_ts.strftime('%-I:%M %p UTC') + ')</h3>'
-            + '<div class="sub">' + str(total_changes) + ' change' + plural
-            + ' since the prior shift</div>'
+            + '<div class="sub">' + str(total_changes) + ' change' + plural + ' since the prior shift</div>'
             + '<div class="stats">'
             + '🆕 ' + str(n_new) + ' new  ·  '
             + '🚪 ' + str(n_gone) + ' gone  ·  '
@@ -2109,10 +2261,9 @@ with tab_analytics:
             + '〰️ ' + str(n_wnk) + ' new wrinkle  ·  '
             + '⬆️ ' + str(n_up) + ' severity up  ·  '
             + '⬇️ ' + str(n_down) + ' severity down'
-            + '</div>'
-            + '</div>'
+            + '</div></div>',
+            unsafe_allow_html=True,
         )
-        st.markdown(summary_html, unsafe_allow_html=True)
 
         if total_changes == 0:
             st.success("No changes since the prior shift.")
@@ -2148,3 +2299,22 @@ with tab_analytics:
 
     st.divider()
     st.caption(st.session_state.get("snapshot_msg", "(no snapshot status)"))
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+st.markdown(
+    '<div class="app-footer">'
+    + '<div class="left">'
+    + '<span>Hand Layup · 527 Lamination · Joby Aviation</span>'
+    + '<span class="pill">' + APP_VERSION + '</span>'
+    + '</div>'
+    + '<div class="right">'
+    + '<span class="pill">' + SNAPSHOT_TABLE.split('.')[-1] + '</span>'
+    + '<span class="pill">' + WATCHLIST_TABLE.split('.')[-1] + '</span>'
+    + '<span>refreshed ' + now_pt.strftime("%-I:%M %p PT") + '</span>'
+    + '</div>'
+    + '</div>',
+    unsafe_allow_html=True,
+)
