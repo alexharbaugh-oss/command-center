@@ -1526,7 +1526,6 @@ if st.session_state.theme == "dark":
                    tickfont=dict(size=11)),
         yaxis=dict(gridcolor="#232C3A", linecolor="#34404E", tickcolor="#34404E",
                    tickfont=dict(size=11)),
-        legend=dict(font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
     )
     PLOTLY_NEUTRAL = "#485668"
     PLOTLY_ACCENT = "#4DA3FF"
@@ -1539,7 +1538,6 @@ else:
                    tickfont=dict(size=11)),
         yaxis=dict(gridcolor="#F0EFE5", linecolor="#D4D6D8", tickcolor="#D4D6D8",
                    tickfont=dict(size=11)),
-        legend=dict(font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
     )
     PLOTLY_NEUTRAL = "#CDD0D1"
     PLOTLY_ACCENT = "#007AE5"
